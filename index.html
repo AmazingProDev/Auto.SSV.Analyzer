@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>360° Telecom Site Audit Viewer</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Setup Screen -->
+    <div id="setup-screen" class="screen active">
+        <div class="setup-card glass-panel">
+            <h1>Site Audit Configuration</h1>
+            <p class="subtitle">Upload 12 photos (taken every 30°) and enter the site's center coordinates.</p>
+            
+            <div class="form-group">
+                <label for="photo-upload">Upload Photos (12 required)</label>
+                <div class="file-drop-area">
+                    <span class="file-msg">Drag & drop files here or click to browse</span>
+                    <input type="file" id="photo-upload" multiple accept="image/*">
+                </div>
+                <div id="file-count" class="info-text">0/12 selected</div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="lat-input">Latitude</label>
+                    <input type="number" id="lat-input" placeholder="e.g. 48.8584" step="any" value="48.8584">
+                </div>
+                <div class="form-group">
+                    <label for="lng-input">Longitude</label>
+                    <input type="number" id="lng-input" placeholder="e.g. 2.2945" step="any" value="2.2945">
+                </div>
+            </div>
+
+            <button id="generate-btn" disabled>Generate 360° View</button>
+        </div>
+    </div>
+
+    <!-- Viewer Screen -->
+    <div id="viewer-screen" class="screen">
+        <header class="viewer-header glass-panel">
+            <div class="header-content">
+                <h2>360° Telecom Site Audit View</h2>
+                <div class="controls">
+                    <span class="info-badge" id="angle-badge">Azimuth: 0°</span>
+                    <button id="restart-btn" class="secondary-btn">New Audit</button>
+                </div>
+            </div>
+        </header>
+
+        <div class="split-layout">
+            <!-- 360 Video Panel -->
+            <div class="panel photo-panel">
+                <div id="panorama-container">
+                    <div id="panorama-track"></div>
+                    <div class="drag-hint">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 17l4 4 4-4M8 7l4-4 4 4M12 22V2"/></svg>
+                        <span>Drag left/right to look around</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Satellite Map Panel -->
+            <div class="panel map-panel">
+                <div id="map-wrapper">
+                    <div id="map"></div>
+                </div>
+                <!-- Mini Compass Overlay -->
+                <div id="compass-overlay">
+                    <div class="compass-arrow">↑</div>
+                    <div class="compass-label">N</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

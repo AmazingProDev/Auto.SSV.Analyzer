@@ -1,0 +1,9 @@
+# Ignore test images directory to avoid uploading potentially sensitive or large user images
+test_images/
+
+# Ignore Mac OS hidden files
+.DS_Store
+
+# Ignore editor directories
+.idea/
+.vscode/
