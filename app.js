@@ -116,7 +116,7 @@ async function handleExcelUpload(file) {
             Array.from(cells).forEach(c => {
                 if (c.getAttribute("t") === "s") {
                     const v = c.getElementsByTagName("v")[0];
-                    if (v && targetStringIndexes[v.textContent]) {
+                    if (v && targetStringIndexes[v.textContent] !== undefined) {
                         const cRef = c.getAttribute("r");
                         const colStr = cRef.replace(/[0-9]/g, '');
                         foundAngleCells.push({
