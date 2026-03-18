@@ -330,10 +330,33 @@ let isDragging = false;
 let startX = 0;
 let startAngle = 0;
 
-function getSingleSetWidth() {
-    if (panoramaTrack.children.length === 0) return 0;
-    // One set represents 360 degrees (e.g. 12 images)
-    return panoramaTrack.children[0].clientWidth * photos.length;
+function getTrackGeometry(targetAngle) {
+    if (panoramaTrack.children.length === 0 || photos.length === 0) return { offset: 0, setWidth: 0 };
+    
+    const count = photos.length;
+    let leftEdges = [0];
+    for (let i = 0; i < count; i++) {
+        leftEdges.push(leftEdges[i] + panoramaTrack.children[i].clientWidth);
+    }
+    const setWidth = leftEdges[count];
+    
+    let centers = [];
+    for (let i = 0; i < count; i++) {
+        centers.push(leftEdges[i] + panoramaTrack.children[i].clientWidth / 2);
+    }
+    centers.push(setWidth + panoramaTrack.children[0].clientWidth / 2);
+    
+    // Calculate fractional index (0 to count)
+    const targetIndex = (targetAngle / 360) * count;
+    const intIndex = Math.floor(targetIndex);
+    const frac = targetIndex - intIndex;
+    
+    // Smoothly interpolate center point between adjacent photos
+    const center1 = centers[intIndex];
+    const center2 = centers[intIndex + 1];
+    const pCenter = center1 + frac * (center2 - center1);
+    
+    return { offset: pCenter, setWidth: setWidth };
 }
 
 panoramaContainer.addEventListener('mousedown', (e) => {
@@ -365,15 +388,12 @@ window.addEventListener('resize', applyAngleToTrack);
 function handleDrag(currentX) {
     const deltaX = currentX - startX;
     
-    const setWidth = getSingleSetWidth();
+    const { setWidth } = getTrackGeometry(0);
     if (setWidth === 0) return;
     
-    // 360 degrees = setWidth pixels
-    // Drag left (negative deltaX) -> angle increases
     const angleShift = -(deltaX / setWidth) * 360;
     let newAngle = startAngle + angleShift;
     
-    // Keep angle positive and wrap around 360
     newAngle = ((newAngle % 360) + 360) % 360;
     
     currentAngle = newAngle;
@@ -381,31 +401,21 @@ function handleDrag(currentX) {
 }
 
 function applyAngleToTrack() {
-    const setWidth = getSingleSetWidth();
+    const { offset, setWidth } = getTrackGeometry(currentAngle);
     if (setWidth === 0) return;
     
-    // Base offset: start at the second set (index 1) which represents 0 degrees
-    const baseOffset = -setWidth;
-    
-    // Calculate pixel shift for currentAngle
-    const angleOffset = -(currentAngle / 360) * setWidth;
-    
-    const totalOffset = baseOffset + angleOffset;
-    
-    // Center the rendering horizontally inside the container viewport
+    // Target the center duplicate set (Set index 1 acts as baseline)
+    const targetCenter = setWidth + offset;
     const containerWidth = panoramaContainer.clientWidth;
-    const imgWidth = panoramaTrack.children[0].clientWidth;
     
-    // Shift by half container width + half image width so that the 0° point (center of first image of set 1) is screen center
-    const finalTx = totalOffset + (containerWidth / 2) - (imgWidth / 2);
+    // Center logic: We want targetCenter to be in the middle of container width
+    const finalTx = (containerWidth / 2) - targetCenter;
     
     panoramaTrack.style.transform = `translateX(${finalTx}px)`;
     
-    // Update UI badge
     const displayAngle = Math.round(currentAngle);
     angleBadge.textContent = 'Azimuth: ' + displayAngle + '°';
     
-    // Sync Map continuously
     if (map) {
         updateViewCone();
         
