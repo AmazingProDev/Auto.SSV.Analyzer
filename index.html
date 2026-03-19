@@ -44,15 +44,23 @@
 
     <!-- Viewer Screen -->
     <div id="viewer-screen" class="screen">
-        <header class="viewer-header glass-panel">
-            <div class="header-content">
-                <h2>360° Telecom Site Audit View</h2>
-                <div class="controls">
-                    <span class="info-badge" id="angle-badge">Azimuth: 0°</span>
-                    <button id="restart-btn" class="secondary-btn">New Audit</button>
-                </div>
+        <div class="top-bar">
+            <h1 class="logo">360° Telecom Site Audit View</h1>
+            <div class="controls-right">
+                <select id="config-select" style="display: none;">
+                    <option value="avant">Avant Optimisation</option>
+                    <option value="apres">Après Optimisation</option>
+                </select>
+                <div id="angle-badge" class="badge">Azimuth: 0°</div>
+                <button id="restart-btn" class="btn">New Audit</button>
             </div>
-        </header>
+        </div>
+        
+        <!-- Sector Heads Up Display -->
+        <div id="sector-hud" class="sector-hud">
+            <div class="sector-hud-title" id="sector-hud-title">Secteur View</div>
+            <img id="sector-hud-img" src="" alt="Sector Antenna Phase">
+        </div>
 
         <div class="split-layout">
             <!-- 360 Video Panel -->

@@ -16,6 +16,15 @@ let photos = [];
 let currentAngle = 0; // 0 to 359 degrees
 let siteLocation = [48.8584, 2.2945];
 
+// Radio Config State
+let radioConfig = { avant: [], apres: [] }; // { name: 'Secteur 1', azimuth: 90, url: '...', target: '...' }
+let activeConfigStr = 'avant';
+const configSelect = document.getElementById('config-select');
+const sectorHud = document.getElementById('sector-hud');
+const sectorHudTitle = document.getElementById('sector-hud-title');
+const sectorHudImg = document.getElementById('sector-hud-img');
+let sectorPolygons = []; // map layers
+
 // Map Objects
 let map = null;
 let siteMarker = null;
@@ -65,7 +74,7 @@ photoUpload.addEventListener('change', async (e) => {
 });
 
 async function handleExcelUpload(file) {
-    fileCount.textContent = `Analyzing Excel file...`;
+    fileCount.textContent = `Analyzing Excel file for Panoramas and Sectors...`;
     generateBtn.disabled = true;
     
     try {
@@ -87,44 +96,49 @@ async function handleExcelUpload(file) {
             });
         }
         
-        // 2. Discover Target Angle Strings
+        // 2. Discover Target Angle Strings array
         const targetAnglesStr = [];
         for (let i = 0; i < 360; i += 30) {
             targetAnglesStr.push(`${i} DEGRÉS`);
         }
         
-        let targetStringIndexes = {};
-        stringArray.forEach((s, idx) => {
-            const upperS = s.toUpperCase().replace(/\s+/g, ' '); 
-            if (targetAnglesStr.includes(upperS)) {
-                const angle = parseInt(upperS.split(' ')[0]);
-                targetStringIndexes[idx.toString()] = angle;
-            }
-        });
-
-        // 3. Find target cells in sheet1
+        // 3. Parse Sheet1 quickly into 2D map
         const sheetXmlObj = zip.file('xl/worksheets/sheet1.xml');
         if (!sheetXmlObj) throw new Error("Could not find sheet1.xml in .xlsx");
         const sheetText = await sheetXmlObj.async('string');
         const sheetDoc = parser.parseFromString(sheetText, "text/xml");
         
-        let foundAngleCells = [];
+        let cellsData = {}; 
         const rows = sheetDoc.getElementsByTagName("row");
         Array.from(rows).forEach(row => {
             const rowNum = parseInt(row.getAttribute("r"));
+            cellsData[rowNum] = {};
             const cells = row.getElementsByTagName("c");
             Array.from(cells).forEach(c => {
-                if (c.getAttribute("t") === "s") {
-                    const v = c.getElementsByTagName("v")[0];
-                    if (v && targetStringIndexes[v.textContent] !== undefined) {
-                        const cRef = c.getAttribute("r");
-                        const colStr = cRef.replace(/[0-9]/g, '');
-                        foundAngleCells.push({
-                            row: rowNum,
-                            colStr: colStr,
-                            angle: targetStringIndexes[v.textContent]
-                        });
-                    }
+                const cRef = c.getAttribute("r");
+                const colStr = cRef.replace(/[0-9]/g, '');
+                const v = c.getElementsByTagName("v")[0];
+                if (v) {
+                    let val = v.textContent;
+                    let isStr = c.getAttribute("t") === "s";
+                    if (isStr) val = stringArray[parseInt(val)];
+                    cellsData[rowNum][colStr] = { value: val, isStr: isStr };
+                }
+            });
+        });
+        
+        // 4. Find Panoramic degree cells
+        let foundAngleCells = [];
+        Object.keys(cellsData).forEach(rStr => {
+            const r = parseInt(rStr);
+            Object.keys(cellsData[r]).forEach(cStr => {
+                const cell = cellsData[r][cStr];
+                if (cell.isStr && typeof cell.value === 'string') {
+                   const upperS = cell.value.toUpperCase().replace(/\s+/g, ' ');
+                   if (targetAnglesStr.includes(upperS)) {
+                       const angle = parseInt(upperS.split(' ')[0]);
+                       foundAngleCells.push({row: r, colStr: cStr, angle: angle});
+                   }
                 }
             });
         });
@@ -135,7 +149,93 @@ async function handleExcelUpload(file) {
             angleRows[fc.row].push(fc);
         });
 
-        // 4. Drawing Rels Mapping
+        // 5. Extract CGPS and Sector Azimuths
+        let coordRows = [];
+        Object.keys(cellsData).forEach(rStr => {
+            const r = parseInt(rStr);
+            const rowObj = cellsData[r];
+            Object.keys(rowObj).forEach(cStr => {
+                if (rowObj[cStr].isStr && typeof rowObj[cStr].value === 'string' && rowObj[cStr].value.includes('Coordonnées GPS Lat:')) {
+                    coordRows.push(r);
+                }
+            });
+        });
+        coordRows.sort((a,b)=>a-b);
+        
+        let cgpsLat = null, cgpsLng = null;
+        let avantConfig = [], apresConfig = [];
+        
+        function extractConfigAzimuths(startRow, configArr) {
+            for(let r=startRow+1; r<startRow+20; r++) {
+                const rowObj = cellsData[r];
+                if(!rowObj) continue;
+                Object.keys(rowObj).forEach(cStr => {
+                    const val = rowObj[cStr].value;
+                    if(rowObj[cStr].isStr && typeof val === 'string' && val.startsWith('Secteur ')) {
+                        const az = rowObj['E'] ? parseFloat(rowObj['E'].value) : null;
+                        if(az !== null && !isNaN(az)) {
+                            configArr.push({ name: val, azimuth: az });
+                        }
+                    }
+                });
+            }
+        }
+        
+        if (coordRows.length > 0) {
+            const r = coordRows[0];
+            cgpsLat = cellsData[r]['E'] ? parseFloat(cellsData[r]['E'].value) : null;
+            cgpsLng = cellsData[r]['H'] ? parseFloat(cellsData[r]['H'].value) : null;
+            extractConfigAzimuths(r, avantConfig);
+        }
+        if (coordRows.length > 1) {
+            extractConfigAzimuths(coordRows[1], apresConfig);
+        }
+        
+        // 6. Finding Photos Azimut anchor rows
+        let photoMainRow = null;
+        Object.keys(cellsData).forEach(rStr => {
+            const r = parseInt(rStr);
+            Object.values(cellsData[r]).forEach(cell => {
+                if (cell.isStr && typeof cell.value === 'string' && cell.value.toUpperCase().includes('PHOTOS AZIMUT')) {
+                    photoMainRow = r;
+                }
+            });
+        });
+        
+        let avantPhotoAnchorRow = null;
+        let apresPhotoAnchorRow = null;
+        if (photoMainRow) {
+            let foundAvantHeader = false;
+            let foundApresHeader = false;
+            for(let r=photoMainRow+1; r<photoMainRow+100; r++) {
+                if(!cellsData[r]) continue;
+                let textConcat = Object.values(cellsData[r]).filter(c=>c.isStr && typeof c.value === 'string').map(c=>c.value.toUpperCase()).join(' ');
+                
+                if (textConcat.includes('AVANT OPTIMISATION')) { foundAvantHeader = true; continue; }
+                if (textConcat.includes('APRES OPTIMISATION')) { foundApresHeader = true; continue; }
+                
+                if (textConcat.includes('SECTEUR 1')) {
+                    if (foundAvantHeader && !avantPhotoAnchorRow) avantPhotoAnchorRow = r;
+                    else if (foundApresHeader && !apresPhotoAnchorRow) apresPhotoAnchorRow = r;
+                }
+                
+                if (avantPhotoAnchorRow && apresPhotoAnchorRow) break;
+            }
+        }
+        
+        function populateAngleRowsForSectors(anchorRow) {
+           if (!angleRows[anchorRow]) angleRows[anchorRow] = [];
+           Object.keys(cellsData[anchorRow]).forEach(cStr => {
+                const cell = cellsData[anchorRow][cStr];
+                if (cell.isStr && typeof cell.value === 'string' && cell.value.startsWith('Secteur')) {
+                     angleRows[anchorRow].push({ colStr: cStr, angle: cell.value });
+                }
+           });
+        }
+        if (avantPhotoAnchorRow) populateAngleRowsForSectors(avantPhotoAnchorRow);
+        if (apresPhotoAnchorRow) populateAngleRowsForSectors(apresPhotoAnchorRow);
+
+        // 7. Drawing Rels Mapping
         const relsXmlObj = zip.file('xl/drawings/_rels/drawing1.xml.rels');
         let drawingRels = {};
         if (relsXmlObj) {
@@ -147,7 +247,7 @@ async function handleExcelUpload(file) {
             });
         }
         
-        // 5. Drawing Anchor matching
+        // 8. Drawing Anchor matching
         const drawXmlObj = zip.file('xl/drawings/drawing1.xml');
         if (!drawXmlObj) throw new Error("Could not find drawing1.xml");
         const drawText = await drawXmlObj.async('string');
@@ -182,7 +282,7 @@ async function handleExcelUpload(file) {
             }
         });
         
-        // 6. Match labels to images by column ordering
+        // 9. Match labels to images by column ordering
         let extractedImages = [];
         Object.keys(angleRows).forEach(rowStr => {
             const rowData = angleRows[rowStr];
@@ -195,10 +295,19 @@ async function handleExcelUpload(file) {
             images.sort((a, b) => a.col - b.col);
             
             for (let i = 0; i < Math.min(rowData.length, images.length); i++) {
-                extractedImages.push({
-                    angle: rowData[i].angle,
-                    target: images[i].target 
-                });
+                const labelAngle = rowData[i].angle;
+                if (typeof labelAngle === 'number') {
+                    extractedImages.push({ angle: labelAngle, target: images[i].target });
+                } else {
+                    const rowN = parseInt(rowStr);
+                    if (rowN === avantPhotoAnchorRow) {
+                         let cfg = avantConfig.find(c => c.name === labelAngle);
+                         if (cfg) cfg.target = images[i].target;
+                    } else if (rowN === apresPhotoAnchorRow) {
+                         let cfg = apresConfig.find(c => c.name === labelAngle);
+                         if (cfg) cfg.target = images[i].target;
+                    }
+                }
             }
         });
         
@@ -206,33 +315,54 @@ async function handleExcelUpload(file) {
             throw new Error(`Only found ${extractedImages.length}/12 panoramic photos. Expected 12 images correctly anchored under 'DEGRÉS' cells.`);
         }
         
-        // 7. Load Binaries and Build Photos Array
-        photos = [];
-        for (let i = 0; i < extractedImages.length; i++) {
-            const item = extractedImages[i];
-            let mediaPath = item.target.startsWith('../') ? item.target.substring(3) : item.target;
-            mediaPath = 'xl/' + mediaPath; 
-            
-            const mediaFile = zip.file(mediaPath);
-            if (mediaFile) {
-                const ext = mediaPath.split('.').pop().toLowerCase();
-                let mime = 'image/jpeg';
-                if (ext === 'png') mime = 'image/png';
+        // 10. Load Binaries
+        async function loadBinaries(itemsArray) {
+            for (let i = 0; i < itemsArray.length; i++) {
+                const item = itemsArray[i];
+                if (!item.target) continue;
+                let mediaPath = item.target.startsWith('../') ? item.target.substring(3) : item.target;
+                mediaPath = 'xl/' + mediaPath; 
                 
-                const blob = await mediaFile.async('blob');
-                const typedBlob = new Blob([blob], { type: mime });
-                
-                photos.push({
-                    file: typedBlob,
-                    url: URL.createObjectURL(typedBlob),
-                    name: `Angle_${item.angle}°`,
-                    angle: item.angle
-                });
+                const mediaFile = zip.file(mediaPath);
+                if (mediaFile) {
+                    const ext = mediaPath.split('.').pop().toLowerCase();
+                    let mime = 'image/jpeg';
+                    if (ext === 'png') mime = 'image/png';
+                    
+                    const blob = await mediaFile.async('blob');
+                    const typedBlob = new Blob([blob], { type: mime });
+                    item.url = URL.createObjectURL(typedBlob);
+                }
             }
         }
         
+        await loadBinaries(extractedImages);
+        await loadBinaries(avantConfig);
+        await loadBinaries(apresConfig);
+        
+        // Finalize state
+        photos = extractedImages.map(item => ({
+            file: null, url: item.url, name: `Angle_${item.angle}°`, angle: item.angle
+        }));
         photos.sort((a, b) => a.angle - b.angle);
-        fileCount.textContent = `Successfully extracted ${photos.length} exact panoramic images from Exce!`;
+        
+        radioConfig.avant = avantConfig.filter(c => c.url);
+        radioConfig.apres = apresConfig.filter(c => c.url);
+        
+        if (cgpsLat !== null && cgpsLng !== null) {
+            latInput.value = cgpsLat;
+            lngInput.value = cgpsLng;
+        }
+        
+        if (radioConfig.avant.length > 0 || radioConfig.apres.length > 0) {
+            configSelect.style.display = 'block';
+            activeConfigStr = radioConfig.avant.length > 0 ? 'avant' : 'apres';
+            configSelect.value = activeConfigStr;
+        } else {
+            configSelect.style.display = 'none';
+        }
+        
+        fileCount.textContent = `Successfully extracted ${photos.length} panoramas, Coordinates & Sectors!`;
         generateBtn.disabled = false;
         
     } catch (err) {
@@ -431,6 +561,68 @@ function applyAngleToTrack() {
             compass.style.transform = `rotate(${-currentAngle}deg)`;
         }
     }
+    
+    // HUD Logic
+    const activeCfg = radioConfig[activeConfigStr] || [];
+    let foundSector = null;
+    
+    for(let sector of activeCfg) {
+        if (sector.azimuth === null || !sector.url) continue;
+        const diff = Math.abs((((sector.azimuth - currentAngle) % 360) + 360) % 360);
+        const dist = Math.min(diff, 360 - diff);
+        if (dist <= 15) { // Show HUD when within 15 degrees
+            foundSector = sector;
+            break;
+        }
+    }
+    
+    if (foundSector) {
+        sectorHudTitle.textContent = `${foundSector.name} (${foundSector.azimuth}°)`;
+        if (sectorHudImg.src !== foundSector.url) sectorHudImg.src = foundSector.url;
+        sectorHud.classList.add('visible');
+    } else {
+        sectorHud.classList.remove('visible');
+    }
+}
+
+// Config Toggle
+configSelect.addEventListener('change', (e) => {
+    activeConfigStr = e.target.value;
+    if (map) updateSectorMapPolygons();
+    applyAngleToTrack();
+});
+
+function updateSectorMapPolygons() {
+    if (!map) return;
+    
+    sectorPolygons.forEach(p => map.removeLayer(p));
+    sectorPolygons = [];
+    
+    const config = radioConfig[activeConfigStr] || [];
+    const distanceMeters = 80; 
+    const fov = 60; // standard 60 deg antenna beamwidth visualization
+    const centerPoint = siteLocation;
+    
+    config.forEach(sector => {
+        if (sector.azimuth === null) return;
+        const leftA = sector.azimuth - fov/2;
+        const rightA = sector.azimuth + fov/2;
+        
+        let points = [centerPoint];
+        for(let a=leftA; a<=rightA; a += 5) {
+            points.push(destinationPoint(centerPoint[0], centerPoint[1], a, distanceMeters));
+        }
+        points.push(destinationPoint(centerPoint[0], centerPoint[1], rightA, distanceMeters));
+        
+        const poly = L.polygon(points, {
+            color: '#ff3333',
+            fillColor: '#ff3333',
+            fillOpacity: 0.15,
+            weight: 2,
+            interactive: false
+        }).addTo(map);
+        sectorPolygons.push(poly);
+    });
 }
 
 // --- MAP LOGIC ---
@@ -472,6 +664,7 @@ function initMap() {
     siteMarker = L.marker(siteLocation, {icon: customIcon}).addTo(map);
     
     updateViewCone();
+    updateSectorMapPolygons();
 }
 
 function updateViewCone() {
