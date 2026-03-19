@@ -41,15 +41,15 @@
 
     <!-- Viewer Screen -->
     <div id="viewer-screen" class="screen">
-        <div class="top-bar">
-            <h1 class="logo">360° Telecom Site Audit View</h1>
+        <div class="top-bar" style="position: absolute; z-index: 1000; top: 15px; left: 15px; background: transparent; border: none; padding: 0;">
+            <h1 class="logo" style="display: none;">360° Telecom Site Audit View</h1>
             <div class="controls-right">
                 <select id="config-select" style="display: none;">
                     <option value="avant">Avant Optimisation</option>
                     <option value="apres">Après Optimisation</option>
                 </select>
-                <div id="angle-badge" class="badge">Azimuth: 0°</div>
-                <button id="restart-btn" class="btn">New Audit</button>
+                <div id="angle-badge" class="badge" style="display: none;">Azimuth: 0°</div>
+                <button id="restart-btn" class="btn" style="background: rgba(47,129,247,0.8); color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">New Audit</button>
             </div>
         </div>
         
@@ -73,9 +73,13 @@
 
             <!-- Satellite Map Panel -->
             <div class="panel map-panel">
+                <div id="site-name-hud" class="site-name-hud">
+                    <span id="display-site-name">Unknown Site</span>
+                </div>
                 <div id="map-info-hud" class="map-info-hud">
                     CGPS: <span id="hud-cgps">--</span><br>
-                    Azimut: <span id="hud-azimuth">--</span>
+                    Direction: <span id="hud-direction">--</span><br>
+                    Azimuts: <span id="hud-azimuts">--</span>
                 </div>
                 <div id="map-wrapper">
                     <div id="map"></div>
