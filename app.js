@@ -695,55 +695,125 @@ function updateSectorMapPolygons() {
     });
 }
 
-// --- KML EXPORT ---
+// --- KMZ EXPORT (with embedded images) ---
 
-document.getElementById('export-kml-btn').addEventListener('click', exportKML);
+document.getElementById('export-kml-btn').addEventListener('click', exportKMZ);
 
-function exportKML() {
-    const siteName = displaySiteName ? displaySiteName.textContent : 'Unknown Site';
-    const lat = siteLocation[0];
-    const lng = siteLocation[1];
+async function exportKMZ() {
+    const btn = document.getElementById('export-kml-btn');
+    btn.textContent = '⏳';
+    btn.disabled = true;
     
-    let config = radioConfig[activeConfigStr] || [];
-    if (config.length === 0) {
-        config = [
-            { name: 'Secteur 1', azimuth: 50 },
-            { name: 'Secteur 2', azimuth: 130 },
-            { name: 'Secteur 3', azimuth: 220 }
-        ];
-    }
-    
-    const distanceMeters = 80;
-    const fov = 60;
-    
-    // Build sector placemarks
-    let sectorPlacemarks = '';
-    const colors = ['ff0000ff', 'ff00ff00', 'ffff0000']; // KML AABBGGRR
-    
-    config.forEach((sector, i) => {
-        if (sector.azimuth === null) return;
+    try {
+        const siteName = displaySiteName ? displaySiteName.textContent : 'Unknown Site';
+        const lat = siteLocation[0];
+        const lng = siteLocation[1];
         
-        const leftA = sector.azimuth - fov / 2;
-        const rightA = sector.azimuth + fov / 2;
-        
-        let coords = `${lng},${lat},0\n`;
-        for (let a = leftA; a <= rightA; a += 5) {
-            const pt = destinationPoint(lat, lng, a, distanceMeters);
-            coords += `          ${pt[1]},${pt[0]},0\n`;
+        let config = radioConfig[activeConfigStr] || [];
+        if (config.length === 0) {
+            config = [
+                { name: 'Secteur 1', azimuth: 50 },
+                { name: 'Secteur 2', azimuth: 130 },
+                { name: 'Secteur 3', azimuth: 220 }
+            ];
         }
-        const lastPt = destinationPoint(lat, lng, rightA, distanceMeters);
-        coords += `          ${lastPt[1]},${lastPt[0]},0\n`;
-        coords += `          ${lng},${lat},0`;
         
-        const color = colors[i % colors.length];
+        const distanceMeters = 80;
+        const fov = 60;
+        const kmzZip = new JSZip();
+        const imgFolder = kmzZip.folder('images');
         
-        sectorPlacemarks += `
+        // --- Helper: fetch blob URL as ArrayBuffer ---
+        async function fetchBlobAsArrayBuffer(blobUrl) {
+            const res = await fetch(blobUrl);
+            return await res.arrayBuffer();
+        }
+        
+        // --- 1. Package 12 panoramic photos ---
+        let photoPlacemarks = '';
+        for (let i = 0; i < photos.length; i++) {
+            const photo = photos[i];
+            if (!photo.url) continue;
+            
+            const angle = photo.angle !== undefined ? photo.angle : i * 30;
+            const filename = `pano_${angle}.jpg`;
+            
+            try {
+                const buf = await fetchBlobAsArrayBuffer(photo.url);
+                imgFolder.file(filename, buf);
+            } catch (e) {
+                console.warn(`Could not package photo ${filename}:`, e);
+                continue;
+            }
+            
+            // Place a small marker at a short distance from site along the bearing
+            const markerPt = destinationPoint(lat, lng, angle, 30);
+            
+            photoPlacemarks += `
+    <Placemark>
+      <name>${angle}°</name>
+      <description><![CDATA[
+        <h3>Panorama ${angle}°</h3>
+        <img src="images/${filename}" width="400"/>
+      ]]></description>
+      <Style>
+        <IconStyle>
+          <scale>0.6</scale>
+          <Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-circle.png</href></Icon>
+        </IconStyle>
+        <BalloonStyle><bgColor>ff1a1a2e</bgColor><textColor>ffffffff</textColor></BalloonStyle>
+      </Style>
+      <Point><coordinates>${markerPt[1]},${markerPt[0]},0</coordinates></Point>
+    </Placemark>`;
+        }
+        
+        // --- 2. Package 3 sector antenna photos + polygons ---
+        let sectorPlacemarks = '';
+        const sectorColors = ['ff0000ff', 'ff00ff00', 'ffff0000'];
+        
+        for (let i = 0; i < config.length; i++) {
+            const sector = config[i];
+            if (sector.azimuth === null) continue;
+            
+            const color = sectorColors[i % sectorColors.length];
+            const leftA = sector.azimuth - fov / 2;
+            const rightA = sector.azimuth + fov / 2;
+            
+            // Build polygon coordinates
+            let coords = `${lng},${lat},0\n`;
+            for (let a = leftA; a <= rightA; a += 5) {
+                const pt = destinationPoint(lat, lng, a, distanceMeters);
+                coords += `          ${pt[1]},${pt[0]},0\n`;
+            }
+            const lastPt = destinationPoint(lat, lng, rightA, distanceMeters);
+            coords += `          ${lastPt[1]},${lastPt[0]},0\n`;
+            coords += `          ${lng},${lat},0`;
+            
+            // Try to package sector antenna image
+            let sectorImgTag = '';
+            if (sector.url) {
+                const sectorFilename = `sector_${i + 1}.jpg`;
+                try {
+                    const buf = await fetchBlobAsArrayBuffer(sector.url);
+                    imgFolder.file(sectorFilename, buf);
+                    sectorImgTag = `<br/><img src="images/${sectorFilename}" width="350"/>`;
+                } catch (e) {
+                    console.warn(`Could not package sector image ${i + 1}:`, e);
+                }
+            }
+            
+            sectorPlacemarks += `
     <Placemark>
       <name>${sector.name} (${sector.azimuth}°)</name>
-      <description>Azimuth: ${sector.azimuth}° | Beamwidth: ${fov}°</description>
+      <description><![CDATA[
+        <h3>${sector.name}</h3>
+        <p>Azimuth: ${sector.azimuth}° | Beamwidth: ${fov}°</p>
+        ${sectorImgTag}
+      ]]></description>
       <Style>
         <LineStyle><color>${color}</color><width>2</width></LineStyle>
         <PolyStyle><color>40${color.substring(2)}</color></PolyStyle>
+        <BalloonStyle><bgColor>ff1a1a2e</bgColor><textColor>ffffffff</textColor></BalloonStyle>
       </Style>
       <Polygon>
         <outerBoundaryIs>
@@ -755,50 +825,76 @@ function exportKML() {
         </outerBoundaryIs>
       </Polygon>
     </Placemark>`;
-    });
-    
-    const azListStr = config.map(c => `${c.name}: ${c.azimuth}°`).join(' | ');
-    
-    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+        }
+        
+        // --- 3. Assemble KML ---
+        const azListStr = config.map(c => `${c.name}: ${c.azimuth}°`).join(' | ');
+        
+        const kml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
     <name>${siteName} - Site Audit</name>
-    <description>360° Telecom Site Audit Export
-CGPS: ${lat.toFixed(6)}, ${lng.toFixed(6)}
-${azListStr}
-Config: ${activeConfigStr === 'avant' ? 'Avant Optimisation' : 'Après Optimisation'}</description>
+    <description><![CDATA[
+      <h2>360° Telecom Site Audit</h2>
+      <p>CGPS: ${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+      <p>${azListStr}</p>
+      <p>Config: ${activeConfigStr === 'avant' ? 'Avant Optimisation' : 'Après Optimisation'}</p>
+    ]]></description>
     
     <Style id="siteIcon">
       <IconStyle>
         <color>ffff7700</color>
-        <scale>1.2</scale>
+        <scale>1.3</scale>
         <Icon><href>http://maps.google.com/mapfiles/kml/shapes/target.png</href></Icon>
       </IconStyle>
-      <LabelStyle><color>ffffffff</color><scale>1</scale></LabelStyle>
+      <LabelStyle><color>ffffffff</color><scale>1.1</scale></LabelStyle>
     </Style>
     
-    <Placemark>
-      <name>${siteName}</name>
-      <description>CGPS: ${lat.toFixed(6)}, ${lng.toFixed(6)}
-Azimuths: ${config.map(c => c.azimuth + '°').join(' / ')}</description>
-      <styleUrl>#siteIcon</styleUrl>
-      <Point>
-        <coordinates>${lng},${lat},0</coordinates>
-      </Point>
-    </Placemark>
-    ${sectorPlacemarks}
+    <Folder>
+      <name>Site</name>
+      <Placemark>
+        <name>${siteName}</name>
+        <description><![CDATA[
+          <p><b>CGPS:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}</p>
+          <p><b>Azimuths:</b> ${config.map(c => c.azimuth + '°').join(' / ')}</p>
+        ]]></description>
+        <styleUrl>#siteIcon</styleUrl>
+        <Point><coordinates>${lng},${lat},0</coordinates></Point>
+      </Placemark>
+    </Folder>
+    
+    <Folder>
+      <name>Sectors (${activeConfigStr === 'avant' ? 'Avant' : 'Après'})</name>
+      ${sectorPlacemarks}
+    </Folder>
+    
+    <Folder>
+      <name>360° Panoramic Photos</name>
+      ${photoPlacemarks}
+    </Folder>
   </Document>
 </kml>`;
-    
-    const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${siteName.replace(/[^a-zA-Z0-9_-]/g, '_')}_audit.kml`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+        
+        // --- 4. Build KMZ ---
+        kmzZip.file('doc.kml', kml);
+        
+        const kmzBlob = await kmzZip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+        const url = URL.createObjectURL(kmzBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${siteName.replace(/[^a-zA-Z0-9_-]/g, '_')}_audit.kmz`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        
+    } catch (err) {
+        console.error('KMZ export failed:', err);
+        alert('Export failed: ' + err.message);
+    } finally {
+        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> KML`;
+        btn.disabled = false;
+    }
 }
 
 // --- MAP LOGIC ---
