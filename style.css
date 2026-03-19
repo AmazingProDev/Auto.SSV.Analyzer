@@ -345,8 +345,9 @@ button:disabled {
 .photo-panel {
     display: flex;
     flex-direction: column;
-    padding: 20px;
-    gap: 20px;
+    padding: 0;
+    gap: 0;
+    border-right: 6px solid #111; /* Center gutter to cleanly separate the map */
 }
 
 #panorama-container {
