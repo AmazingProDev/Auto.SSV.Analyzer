@@ -41,16 +41,15 @@
 
     <!-- Viewer Screen -->
     <div id="viewer-screen" class="screen">
-        <div class="top-bar" style="display: flex; justify-content: flex-end; padding: 15px 25px; border-bottom: 2px solid var(--accent-color); background: rgba(10, 10, 10, 0.8);">
-            <h1 class="logo" style="display: none;">360° Telecom Site Audit View</h1>
-            <div class="controls-right">
-                <select id="config-select" style="display: none;">
-                    <option value="avant">Avant Optimisation</option>
-                    <option value="apres">Après Optimisation</option>
-                </select>
-                <div id="angle-badge" class="badge" style="display: none;">Azimuth: 0°</div>
-                <button id="restart-btn" class="btn" style="background: var(--accent-color); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold;">New Audit</button>
-            </div>
+        <button id="restart-btn" style="width: 100%; background: #4da3ff; color: white; border: none; padding: 18px; font-size: 24px; font-weight: bold; cursor: pointer; text-align: center; border-radius: 0; box-shadow: 0 4px 10px rgba(0,0,0,0.5); z-index: 1000; position: relative;">New Audit</button>
+
+        <div style="display: none;">
+            <h1 class="logo">360° Telecom Site Audit View</h1>
+            <select id="config-select">
+                <option value="avant">Avant Optimisation</option>
+                <option value="apres">Après Optimisation</option>
+            </select>
+            <div id="angle-badge" class="badge">Azimuth: 0°</div>
         </div>
         
         <!-- Sector Heads Up Display -->
