@@ -558,6 +558,7 @@ function applyAngleToTrack() {
     angleBadge.textContent = 'Azimuth: ' + displayAngle + '°';
     
     if (map) {
+        map.setView(siteLocation, map.getZoom(), {animate: false}); // Mathematical enforcement of pivot center
         updateViewCone();
         
         // Rotate the map wrapper to simulate heading up
@@ -640,7 +641,9 @@ function updateSectorMapPolygons() {
 
 function initMap() {
     map = L.map('map', {
-        zoomControl: false
+        zoomControl: false,
+        dragging: false,            // Lock map panning to firmly keep the site dot perfectly anchored
+        scrollWheelZoom: 'center'   // Force scroll zooms to anchor exactly on the center marker 
     });
     
     // Use ResizeObserver for bulletproof map sizing when layout changes
