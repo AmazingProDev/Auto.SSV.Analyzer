@@ -446,7 +446,6 @@ button:disabled {
     height: 300%;
     top: -100%;
     left: -100%;
-    transition: transform 0.1s linear;
     transform-origin: center center;
 }
 
@@ -493,7 +492,6 @@ button:disabled {
     font-size: 18px;
     line-height: 1;
     font-weight: bold;
-    transition: transform 0.1s linear;
     transform-origin: center;
 }
 
