@@ -20,11 +20,11 @@ let siteLocation = [48.8584, 2.2945];
 let radioConfig = { avant: [], apres: [] }; // { name: 'Secteur 1', azimuth: 90, url: '...', target: '...' }
 let activeConfigStr = 'avant';
 const configSelect = document.getElementById('config-select');
-const sectorHud = document.getElementById('sector-hud');
-const sectorHudTitle = document.getElementById('sector-hud-title');
 const sectorHudImg = document.getElementById('sector-hud-img');
 const hudCgps = document.getElementById('hud-cgps');
-const hudAzimuth = document.getElementById('hud-azimuth');
+const hudDirection = document.getElementById('hud-direction');
+const hudAzimuts = document.getElementById('hud-azimuts');
+const displaySiteName = document.getElementById('display-site-name');
 let sectorPolygons = []; // map layers
 
 // Map Objects
@@ -380,6 +380,14 @@ async function handleExcelUpload(file) {
         radioConfig.avant = avantConfig.filter(c => c.url);
         radioConfig.apres = apresConfig.filter(c => c.url);
         
+        if (displaySiteName) {
+            displaySiteName.textContent = file.name.replace('.xlsx', '');
+        }
+        
+        if (hudAzimuts) {
+            // we'll populate this properly inside the select change listener or defaults
+        }
+        
         if (cgpsLat !== null && cgpsLng !== null) {
             latInput.value = cgpsLat;
             lngInput.value = cgpsLng;
@@ -577,16 +585,16 @@ function applyAngleToTrack() {
     
     const displayAngle = Math.round(currentAngle);
     angleBadge.textContent = 'Azimuth: ' + displayAngle + '°';
-    if (hudAzimuth) hudAzimuth.textContent = `${displayAngle}°`;
+    if (hudDirection) hudDirection.textContent = `${displayAngle}°`;
     
     if (map) {
-        // Gently snap the map back to the CGPS pivot when dragging the 360 view
-        map.setView(siteLocation, map.getZoom(), {animate: true, duration: 0.25}); 
         updateViewCone();
         
-        // Rotate the map wrapper to simulate heading up
+        // Rotate the map wrapper securely around the CGPS marker's accurate screen location!
         const mapWrapper = document.getElementById('map-wrapper');
         if (mapWrapper) {
+            const pt = map.latLngToContainerPoint(siteLocation);
+            mapWrapper.style.transformOrigin = `${pt.x}px ${pt.y}px`;
             mapWrapper.style.transform = `rotate(${-currentAngle}deg)`;
         }
         
@@ -634,6 +642,11 @@ function updateSectorMapPolygons() {
     sectorPolygons = [];
     
     const config = radioConfig[activeConfigStr] || [];
+    
+    if (hudAzimuts) {
+        const azList = config.map(c => c.azimuth).filter(a => a !== null);
+        hudAzimuts.textContent = azList.length > 0 ? (azList.join('°/') + '°') : '--';
+    }
     const distanceMeters = 80; 
     const fov = 60; // standard 60 deg antenna beamwidth visualization
     const centerPoint = siteLocation;
