@@ -211,6 +211,11 @@ async function handleExcelUpload(file) {
             
             cgpsLat = latCol ? parseFloat(rowObj[latCol].value) : null;
             cgpsLng = lngCol ? parseFloat(rowObj[lngCol].value) : null;
+            
+            // Moroccan Site Auto-Correction (Lat MUST be North/Positive, Lng MUST be West/Negative)
+            if (cgpsLat !== null) cgpsLat = Math.abs(cgpsLat);
+            if (cgpsLng !== null) cgpsLng = -Math.abs(cgpsLng);
+            
             extractConfigAzimuths(r, avantConfig);
         }
         if (coordRows.length > 1) {
