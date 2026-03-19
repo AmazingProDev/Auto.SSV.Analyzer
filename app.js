@@ -166,13 +166,24 @@ async function handleExcelUpload(file) {
         let avantConfig = [], apresConfig = [];
         
         function extractConfigAzimuths(startRow, configArr) {
+            let azimutColStr = 'E'; // fallback
+            // Search for Azimuth header explicitly in the rows roughly before Sector listings
+            for(let r=startRow; r<startRow+15; r++) {
+               if(!cellsData[r]) continue;
+               Object.keys(cellsData[r]).forEach(cStr => {
+                   if (cellsData[r][cStr].isStr && typeof cellsData[r][cStr].value === 'string' && cellsData[r][cStr].value.includes('Azimut')) {
+                       azimutColStr = cStr;
+                   }
+               });
+            }
+            
             for(let r=startRow+1; r<startRow+20; r++) {
                 const rowObj = cellsData[r];
                 if(!rowObj) continue;
                 Object.keys(rowObj).forEach(cStr => {
                     const val = rowObj[cStr].value;
                     if(rowObj[cStr].isStr && typeof val === 'string' && val.startsWith('Secteur ')) {
-                        const az = rowObj['E'] ? parseFloat(rowObj['E'].value) : null;
+                        const az = rowObj[azimutColStr] ? parseFloat(rowObj[azimutColStr].value) : null;
                         if(az !== null && !isNaN(az)) {
                             configArr.push({ name: val, azimuth: az });
                         }
