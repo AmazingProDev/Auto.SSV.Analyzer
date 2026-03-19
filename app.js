@@ -194,8 +194,21 @@ async function handleExcelUpload(file) {
         
         if (coordRows.length > 0) {
             const r = coordRows[0];
-            cgpsLat = cellsData[r]['E'] ? parseFloat(cellsData[r]['E'].value) : null;
-            cgpsLng = cellsData[r]['H'] ? parseFloat(cellsData[r]['H'].value) : null;
+            const rowObj = cellsData[r];
+            
+            let latCol = null, lngCol = null;
+            const cols = Object.keys(rowObj).sort(); // Sort alphabetically A, B, C...
+            for (let i = 0; i < cols.length; i++) {
+                const cStr = cols[i];
+                const cell = rowObj[cStr];
+                if (cell.isStr && typeof cell.value === 'string') {
+                    if (cell.value.includes('Lat:') && i + 1 < cols.length) latCol = cols[i + 1];
+                    if (cell.value.includes('Long:') && i + 1 < cols.length) lngCol = cols[i + 1];
+                }
+            }
+            
+            cgpsLat = latCol ? parseFloat(rowObj[latCol].value) : null;
+            cgpsLng = lngCol ? parseFloat(rowObj[lngCol].value) : null;
             extractConfigAzimuths(r, avantConfig);
         }
         if (coordRows.length > 1) {
