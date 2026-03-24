@@ -81,4 +81,4 @@ def app(environ, start_response):
         return [json.dumps(response).encode("utf-8")]
 
     start_response("405 Method Not Allowed", headers + [("Content-Type", "application/json")])
-    return [json.dumps({"success": False, "error": f"Method {method} not allowed on endpoint /api/ssv-validation. Please use POST."}).encode("utf-8")]
+    return [json.dumps({"success": False, "error": f"Method {method} not allowed on endpoint /api/. Please use POST."}).encode("utf-8")]
