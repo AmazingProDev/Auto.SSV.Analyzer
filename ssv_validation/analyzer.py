@@ -3,8 +3,19 @@ from __future__ import annotations
 import base64
 import logging
 import math
-from typing import Iterable
+import time
+from typing import Any, Iterable
 
+from .acceleration import (
+    bitmap_hsv_array,
+    bitmap_rgb_array,
+    rgb_pixel,
+    build_integral_image as build_integral_image_shared,
+    extract_binary_components,
+    hsv_pixel,
+    neighborhood_sum as neighborhood_sum_shared,
+    np,
+)
 from .models import AnalysisOutcome, Bitmap, DetectedColor
 
 LOGGER = logging.getLogger(__name__)
@@ -91,12 +102,28 @@ class SsvAnalysisError(ValueError):
 
 
 def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
+    stage_started = time.perf_counter()
     hsv_cache, colorful_mask = build_color_cache(bitmap)
+    color_cache_s = time.perf_counter() - stage_started
+
+    stage_started = time.perf_counter()
     colorful_integral = build_integral_image(colorful_mask)
     site_center_hint = estimate_site_center_from_density(bitmap, colorful_mask, colorful_integral)
+    site_hint_s = time.perf_counter() - stage_started
+
+    stage_started = time.perf_counter()
     sector_hues = detect_sector_hues(bitmap, hsv_cache, colorful_mask, colorful_integral, site_center_hint)
+    sector_hues_s = time.perf_counter() - stage_started
+
+    stage_started = time.perf_counter()
     site_center = estimate_site_center(bitmap, hsv_cache, colorful_mask, colorful_integral, sector_hues, site_center_hint)
+    site_center_s = time.perf_counter() - stage_started
+
+    stage_started = time.perf_counter()
     sector_signatures = extract_sector_signatures(bitmap, hsv_cache, colorful_mask, colorful_integral, sector_hues, site_center)
+    sector_signatures_s = time.perf_counter() - stage_started
+
+    stage_started = time.perf_counter()
     point_sets, evaluation_angles = segment_point_clouds(
         bitmap,
         hsv_cache,
@@ -106,6 +133,7 @@ def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
         sector_signatures,
         site_center,
     )
+    segment_point_clouds_s = time.perf_counter() - stage_started
 
     total_points = sum(len(point_set["angles"]) for point_set in point_sets)
     if total_points < MIN_TOTAL_POINT_PIXELS:
@@ -131,6 +159,7 @@ def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
             )
         )
 
+    stage_started = time.perf_counter()
     misassigned_ratio = compute_misassigned_ratio(ordered_angles, ordered_point_sets)
     mixed_bin_ratio = compute_mixed_bin_ratio(ordered_point_sets)
     intrusion_ratios = compute_intrusion_ratios(ordered_angles, sector_boundaries, ordered_point_sets)
@@ -167,6 +196,7 @@ def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
     if cross and warning_details:
         cross = False
     verdict = "Cross detected" if cross else "No cross detected"
+    cross_metrics_s = time.perf_counter() - stage_started
 
     metrics = {
         "mixed_bin_ratio": round(mixed_bin_ratio, 4),
@@ -184,8 +214,18 @@ def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
         "min_angle_separation": round(min_angle_separation, 2),
         "confidence": round(confidence, 4),
         "warnings": warnings,
+        "stage_timings": {
+            "color_cache_s": round(color_cache_s, 4),
+            "site_hint_s": round(site_hint_s, 4),
+            "sector_hues_s": round(sector_hues_s, 4),
+            "site_center_s": round(site_center_s, 4),
+            "sector_signatures_s": round(sector_signatures_s, 4),
+            "segment_point_clouds_s": round(segment_point_clouds_s, 4),
+            "cross_metrics_s": round(cross_metrics_s, 4),
+        },
     }
 
+    stage_started = time.perf_counter()
     annotated_preview = build_annotated_preview(
         bitmap=bitmap,
         preview_image_uri=preview_image_uri,
@@ -195,6 +235,7 @@ def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
         verdict=verdict,
         metrics=metrics,
     )
+    metrics["stage_timings"]["annotation_s"] = round(time.perf_counter() - stage_started, 4)
 
     return AnalysisOutcome(
         cross=cross,
@@ -208,18 +249,26 @@ def analyze_bitmap(bitmap: Bitmap, preview_image_uri: str) -> AnalysisOutcome:
     )
 
 
-def build_color_cache(bitmap: Bitmap) -> tuple[list[list[tuple[float, float, float] | None]], list[list[int]]]:
+def build_color_cache(bitmap: Bitmap) -> tuple[Any, Any]:
     width = bitmap.width
     height = bitmap.height
     legend_x = int(width * LEGEND_X_RATIO)
     legend_y = int(height * LEGEND_Y_RATIO)
 
+    hsv_array = bitmap_hsv_array(bitmap)
+    if hsv_array is not None:
+        colorful_mask = (
+            (hsv_array[..., 1] >= COLOR_SATURATION_THRESHOLD)
+            & (hsv_array[..., 2] >= COLOR_VALUE_THRESHOLD)
+        ).astype(np.uint8)
+        colorful_mask[:legend_y, :legend_x] = 0
+        return hsv_array, colorful_mask
+
     hsv_cache: list[list[tuple[float, float, float] | None]] = [[None] * width for _ in range(height)]
     colorful_mask = [[0] * width for _ in range(height)]
-
     for y in range(height):
         for x in range(width):
-            red, green, blue = bitmap.pixels[y][x]
+            red, green, blue = rgb_pixel(bitmap, x, y)
             hue, saturation, value = rgb_to_hsv(red, green, blue)
             hsv_cache[y][x] = (hue, saturation, value)
 
@@ -308,7 +357,7 @@ def detect_sector_hues(
             if density < SITE_FAN_MIN_DENSITY:
                 continue
 
-            hue = hsv_cache[y][x][0] if hsv_cache[y][x] else 0.0
+            hue = hsv_pixel(hsv_cache, x, y)[0]
             radial_weight = max(0.2, 1.0 - (abs(radius - SITE_FAN_TARGET_RADIUS) / SITE_FAN_OUTER_RADIUS))
             hist[int(hue * 36) % 36] += density * radial_weight
 
@@ -349,7 +398,7 @@ def detect_sector_hues_fallback(
             density = neighborhood_sum(colorful_integral, x, y, DENSE_WINDOW_RADIUS, width, height)
             if density < DENSE_FOR_HUE_PEAKS:
                 continue
-            hue = hsv_cache[y][x][0] if hsv_cache[y][x] else 0.0
+            hue = hsv_pixel(hsv_cache, x, y)[0]
             hist[int(hue * 36) % 36] += 1
 
     peaks: list[int] = []
@@ -396,7 +445,7 @@ def estimate_site_center(
                 if density < DENSE_FOR_SITE_COLOR:
                     continue
 
-                hue = hsv_cache[y][x][0] if hsv_cache[y][x] else 0.0
+                hue = hsv_pixel(hsv_cache, x, y)[0]
                 if circular_hue_distance(hue, sector_hue) >= HUE_MATCH_FOR_SITE:
                     continue
 
@@ -441,7 +490,13 @@ def segment_point_clouds(
     legend_y = int(height * LEGEND_Y_RATIO)
     site_x, site_y = site_center
     sector_prototypes = [signature["rgb"] for signature in sector_signatures]
-    sector_masks = [[[0] * width for _ in range(height)] for _ in sector_hues]
+    use_array_masks = np is not None and isinstance(colorful_mask, np.ndarray)
+    sector_masks = (
+        [np.zeros((height, width), dtype=np.uint8) for _ in sector_hues]
+        if use_array_masks
+        else [[[0] * width for _ in range(height)] for _ in sector_hues]
+    )
+    rgb_array = bitmap_rgb_array(bitmap) if use_array_masks else None
 
     point_sets = [
         {
@@ -452,20 +507,20 @@ def segment_point_clouds(
     ]
     evaluation_angles: list[float] = []
 
-    for y in range(height):
-        for x in range(width):
-            if not colorful_mask[y][x]:
-                continue
-            if x < legend_x and y < legend_y:
-                continue
-
+    if use_array_masks:
+        candidate_pixels = np.argwhere(colorful_mask != 0)
+        for y_value, x_value in candidate_pixels.tolist():
+            x = int(x_value)
+            y = int(y_value)
             density = neighborhood_sum(colorful_integral, x, y, POINT_WINDOW_RADIUS, width, height)
             if density < POINT_MIN_DENSITY or density > POINT_MAX_DENSITY:
                 continue
 
-            hue, _saturation, _value = hsv_cache[y][x] or (0.0, 0.0, 0.0)
+            hue = float(hsv_cache[y, x, 0])
             hue_distances = [circular_hue_distance(hue, sector_hue) * 360.0 for sector_hue in sector_hues]
-            rgb_distances = [rgb_distance(bitmap.pixels[y][x], prototype) for prototype in sector_prototypes]
+            pixel = rgb_array[y, x]
+            pixel_rgb = (int(pixel[0]), int(pixel[1]), int(pixel[2]))
+            rgb_distances = [rgb_distance(pixel_rgb, prototype) for prototype in sector_prototypes]
             sector_index = min(
                 range(len(hue_distances)),
                 key=lambda index: (rgb_distances[index], hue_distances[index]),
@@ -481,7 +536,39 @@ def segment_point_clouds(
             if radius < POINT_MIN_RADIUS:
                 continue
 
-            sector_masks[sector_index][y][x] = 1
+            sector_masks[sector_index][y, x] = 1
+    else:
+        for y in range(height):
+            for x in range(width):
+                if not colorful_mask[y][x]:
+                    continue
+                if x < legend_x and y < legend_y:
+                    continue
+
+                density = neighborhood_sum(colorful_integral, x, y, POINT_WINDOW_RADIUS, width, height)
+                if density < POINT_MIN_DENSITY or density > POINT_MAX_DENSITY:
+                    continue
+
+                hue, _saturation, _value = hsv_pixel(hsv_cache, x, y)
+                hue_distances = [circular_hue_distance(hue, sector_hue) * 360.0 for sector_hue in sector_hues]
+                pixel_rgb = rgb_pixel(bitmap, x, y)
+                rgb_distances = [rgb_distance(pixel_rgb, prototype) for prototype in sector_prototypes]
+                sector_index = min(
+                    range(len(hue_distances)),
+                    key=lambda index: (rgb_distances[index], hue_distances[index]),
+                )
+                if hue_distances[sector_index] > sector_hue_threshold_degrees(sector_hues, sector_index):
+                    continue
+                if rgb_distances[sector_index] > sector_rgb_threshold(sector_prototypes, sector_index):
+                    continue
+
+                dx = x - site_x
+                dy = y - site_y
+                radius = math.sqrt((dx * dx) + (dy * dy))
+                if radius < POINT_MIN_RADIUS:
+                    continue
+
+                sector_masks[sector_index][y][x] = 1
 
     for sector_index, sector_mask in enumerate(sector_masks):
         components = extract_components(sector_mask)
@@ -548,11 +635,11 @@ def extract_sector_signatures(
                 if density < SITE_FAN_MIN_DENSITY:
                     continue
 
-                hue = hsv_cache[y][x][0] if hsv_cache[y][x] else 0.0
+                hue = hsv_pixel(hsv_cache, x, y)[0]
                 if circular_hue_distance(hue, sector_hue) * 360.0 > SECTOR_PROTOTYPE_HUE_WINDOW_DEG:
                     continue
 
-                samples.append(bitmap.pixels[y][x])
+                samples.append(rgb_pixel(bitmap, x, y))
                 sample_angles.append(angle_from_center(dx, dy))
 
         if not samples:
@@ -568,54 +655,10 @@ def extract_sector_signatures(
     return signatures
 
 
-def extract_components(mask: list[list[int]]) -> list[dict[str, object]]:
-    height = len(mask)
-    width = len(mask[0]) if height else 0
-    visited = [[False] * width for _ in range(height)]
-    components: list[dict[str, object]] = []
-
-    for y in range(height):
-        for x in range(width):
-            if not mask[y][x] or visited[y][x]:
-                continue
-
-            stack = [(x, y)]
-            visited[y][x] = True
-            pixels: list[tuple[int, int]] = []
-            min_x = max_x = x
-            min_y = max_y = y
-
-            while stack:
-                current_x, current_y = stack.pop()
-                pixels.append((current_x, current_y))
-                min_x = min(min_x, current_x)
-                max_x = max(max_x, current_x)
-                min_y = min(min_y, current_y)
-                max_y = max(max_y, current_y)
-
-                for offset_y in (-1, 0, 1):
-                    for offset_x in (-1, 0, 1):
-                        if offset_x == 0 and offset_y == 0:
-                            continue
-                        next_x = current_x + offset_x
-                        next_y = current_y + offset_y
-                        if not (0 <= next_x < width and 0 <= next_y < height):
-                            continue
-                        if visited[next_y][next_x] or not mask[next_y][next_x]:
-                            continue
-                        visited[next_y][next_x] = True
-                        stack.append((next_x, next_y))
-
-            components.append(
-                {
-                    "pixels": pixels,
-                    "area": len(pixels),
-                    "width": (max_x - min_x) + 1,
-                    "height": (max_y - min_y) + 1,
-                }
-            )
-
-    return components
+def extract_components(mask: Any) -> list[dict[str, object]]:
+    if np is not None and isinstance(mask, np.ndarray):
+        return extract_binary_components(mask_array=mask)
+    return extract_binary_components(mask_rows=mask)
 
 
 def is_point_like_component(component: dict[str, object]) -> bool:
@@ -660,7 +703,7 @@ def collect_component_samples(
     for component in components:
         for x, y in component["pixels"]:
             angles.append(angle_from_center(x - site_x, y - site_y))
-            rgb_samples.append(bitmap.pixels[y][x])
+            rgb_samples.append(rgb_pixel(bitmap, x, y))
 
     return angles, rgb_samples
 
@@ -1199,11 +1242,6 @@ def build_annotated_preview(
     svg = f"""
 <svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
   <image href="{preview_image_uri}" width="{width}" height="{height}" />
-  <rect x="{width - 180}" y="14" width="166" height="62" rx="12" fill="rgba(12, 16, 24, 0.82)" />
-  <text x="{width - 166}" y="38" fill="#ffffff" font-size="18" font-weight="700" font-family="Inter, sans-serif">{verdict}</text>
-  <text x="{width - 166}" y="58" fill="#b4d8ff" font-size="12" font-family="Inter, sans-serif">
-    Conf. {metrics['confidence']:.2f} | Mixed {metrics['mixed_bin_ratio']:.2f}
-  </text>
   {''.join(overlay_lines)}
   <circle cx="{site_x:.2f}" cy="{site_y:.2f}" r="8" fill="none" stroke="#ffffff" stroke-width="3" />
   <circle cx="{site_x:.2f}" cy="{site_y:.2f}" r="3" fill="#ffffff" />
@@ -1222,33 +1260,19 @@ def project_angle(x: float, y: float, angle_degrees: float, distance: float) -> 
     )
 
 
-def build_integral_image(mask: list[list[int]]) -> list[list[int]]:
-    height = len(mask)
-    width = len(mask[0]) if height else 0
-    integral = [[0] * (width + 1) for _ in range(height + 1)]
-
-    for y in range(height):
-        row_sum = 0
-        for x in range(width):
-            row_sum += mask[y][x]
-            integral[y + 1][x + 1] = integral[y][x + 1] + row_sum
-
-    return integral
+def build_integral_image(mask: Any) -> Any:
+    return build_integral_image_shared(mask)
 
 
 def neighborhood_sum(
-    integral: list[list[int]],
+    integral: Any,
     x: int,
     y: int,
     radius: int,
     width: int,
     height: int,
 ) -> int:
-    x0 = max(0, x - radius)
-    y0 = max(0, y - radius)
-    x1 = min(width, x + radius + 1)
-    y1 = min(height, y + radius + 1)
-    return integral[y1][x1] - integral[y0][x1] - integral[y1][x0] + integral[y0][x0]
+    return neighborhood_sum_shared(integral, x, y, radius, width, height)
 
 
 def average_rgb(samples: Iterable[tuple[int, int, int]]) -> tuple[int, int, int]:

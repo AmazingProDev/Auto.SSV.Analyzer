@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import os
 import unittest
+from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch
 
 from ssv_validation.analyzer import (
@@ -9,17 +12,33 @@ from ssv_validation.analyzer import (
     detect_late_ho_warnings,
     detect_minor_pair_late_ho_warnings,
     detect_pair_late_ho_warnings,
+    LEGEND_X_RATIO,
+    LEGEND_Y_RATIO,
 )
-from ssv_validation.kpi_analyzer import analyze_kpi_bitmap
+from ssv_validation.kpi_analyzer import (
+    analyze_kpi_bitmap,
+    cluster_components,
+    detect_legend_swatches,
+    extract_kpi_point_components,
+    hotspot_circle,
+    is_red_component,
+    resolve_degraded_swatch,
+)
 from ssv_validation.legend_mapping import (
     azimuth_confirmation_bonus,
     extract_identifier_lookup_from_sheet,
     row_identifier_cost,
 )
+from ssv_validation.imaging import clear_prepared_image_cache, prepare_image_bytes_for_analysis, supports_direct_embedded_image_processing
 from ssv_validation.models import AnalysisOutcome, Bitmap, DetectedColor, ImageCandidate
 from ssv_validation.service import validate_ssv_workbook
 from ssv_validation.throughput import evaluate_avg_throughput
 from ssv_validation.workbook import infer_lte_band, match_target_profile, rank_sheet_name
+
+try:  # pragma: no cover - environment dependent
+    from PIL import Image
+except Exception:  # pragma: no cover - graceful fallback
+    Image = None
 
 
 WHITE = (247, 247, 247)
@@ -168,6 +187,125 @@ def make_kpi_bitmap(with_red_cluster: bool) -> Bitmap:
     return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
 
 
+def make_sparse_kpi_bitmap() -> Bitmap:
+    pixels = make_canvas(420, 220)
+    sparse_points = [
+        (96, 118),
+        (122, 118),
+        (148, 118),
+        (174, 118),
+        (200, 118),
+        (226, 118),
+        (252, 118),
+    ]
+    for x, y in sparse_points:
+        draw_disc(pixels, x, y, 3, (36, 205, 72))
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_sparse_red_run_kpi_bitmap() -> Bitmap:
+    pixels = make_canvas(520, 250)
+    sparse_red = (205, 147, 98)
+    for x in range(8, 18):
+        for y in range(40, 50):
+            pixels[y][x] = sparse_red
+    for step in range(6):
+        draw_disc(pixels, 120 + (step * 28), 150, 3, sparse_red)
+    draw_disc(pixels, 120, 110, 3, (36, 205, 72))
+    draw_disc(pixels, 148, 110, 3, (243, 217, 41))
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_kpi_bitmap_with_top_label_noise() -> Bitmap:
+    pixels = make_canvas(520, 250)
+    orange = (231, 156, 104)
+    for x, y in ((285, 8), (305, 30), (345, 55), (370, 32), (395, 124), (474, 4), (474, 96), (485, 28)):
+        draw_disc(pixels, x, y, 4, orange)
+
+    for step in range(5):
+        draw_disc(pixels, 220 + (step * 22), 210, 3, orange)
+
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_kpi_bitmap_with_center_label_noise() -> Bitmap:
+    pixels = make_canvas(520, 250)
+    orange = (231, 156, 104)
+    top_row = [(244, 130), (258, 131), (276, 131), (291, 130), (299, 130), (312, 131)]
+    bottom_row = [(263, 143), (278, 144), (294, 144), (302, 144), (315, 144)]
+    for x, y in top_row + bottom_row:
+        draw_disc(pixels, x, y, 3, orange)
+
+    for x, color in ((66, (49, 93, 247)), (318, (49, 93, 247)), (514, (49, 93, 247))):
+        draw_disc(pixels, x, 64 if x != 66 else 214, 4, color)
+
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_large_red_run_kpi_bitmap() -> Bitmap:
+    pixels = make_canvas(980, 420)
+    for step in range(6):
+        draw_disc(pixels, 280 + (step * 48), 210, 12, RED)
+
+    for x, color in ((170, (36, 205, 72)), (215, (243, 217, 41)), (640, (36, 205, 72)), (695, (243, 217, 41))):
+        draw_disc(pixels, x, 210, 10, color)
+
+    # Red map label noise that should not be selected as the degraded run.
+    for cx, cy, radius in ((760, 298, 7), (794, 302, 8), (825, 306, 6)):
+        draw_disc(pixels, cx, cy, radius, RED)
+
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_kpi_bitmap_with_two_red_runs() -> Bitmap:
+    pixels = make_canvas(760, 320)
+
+    for step in range(6):
+        draw_disc(pixels, 170 + (step * 24), 176, 6, RED)
+
+    for step in range(8):
+        draw_disc(pixels, 420 + (step * 24), 176, 6, RED)
+
+    for x, color in ((110, (36, 205, 72)), (140, (243, 217, 41)), (370, (36, 205, 72)), (650, (243, 217, 41))):
+        draw_disc(pixels, x, 176, 5, color)
+
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_kpi_bitmap_with_label_cluster_and_real_run() -> Bitmap:
+    pixels = make_canvas(640, 360)
+    orange = (231, 156, 104)
+
+    top_row = [(290, 126), (299, 126), (307, 127), (317, 126), (325, 127), (341, 126), (349, 127), (357, 126)]
+    bottom_row = [(309, 140), (327, 140), (335, 140), (345, 140), (354, 140), (362, 140), (369, 140), (376, 140)]
+    for x, y in top_row + bottom_row:
+        draw_disc(pixels, x, y, 3, orange)
+
+    for step in range(10):
+        draw_disc(pixels, 238 + (step * 14), 282, 3, RED)
+
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
+def make_kpi_bitmap_with_red_legend_and_orange_noise() -> Bitmap:
+    pixels = make_canvas(640, 360)
+
+    for x in range(9, 17):
+        for y in range(66, 72):
+            pixels[y][x] = RED
+
+    orange = (231, 156, 104)
+    top_row = [(290, 126), (299, 126), (307, 127), (317, 126), (325, 127), (341, 126), (349, 127), (357, 126)]
+    bottom_row = [(309, 140), (327, 140), (335, 140), (345, 140), (354, 140), (362, 140), (369, 140), (376, 140)]
+    for x, y in top_row + bottom_row:
+        draw_disc(pixels, x, y, 3, orange)
+
+    for step in range(6):
+        draw_disc(pixels, 238 + (step * 14), 282, 3, RED)
+
+    return Bitmap(width=len(pixels[0]), height=len(pixels), pixels=pixels)
+
+
 class WorkbookSelectionTests(unittest.TestCase):
     def test_mobility_sheet_ranks_above_other_sheets(self) -> None:
         target_score = rank_sheet_name("3. L800 DT en mobilite")
@@ -235,6 +373,7 @@ class AnalysisTests(unittest.TestCase):
 
         self.assertTrue(result.is_failure)
         self.assertEqual(result.verdict, "SSV NOK")
+        self.assertEqual(result.metrics["red_cluster_strategy"], "ordered_chain")
         self.assertIn("Continuous red points detected", " ".join(result.warnings))
 
     def test_kpi_bitmap_returns_ssv_ok_for_low_red_ratio(self) -> None:
@@ -248,6 +387,98 @@ class AnalysisTests(unittest.TestCase):
 
         self.assertFalse(result.is_failure)
         self.assertEqual(result.verdict, "SSV OK")
+
+    def test_sparse_kpi_bitmap_returns_ssv_ok_with_warning(self) -> None:
+        result = analyze_kpi_bitmap(make_sparse_kpi_bitmap(), "data:image/png;base64,", "SINR", "quality")
+
+        self.assertFalse(result.is_failure)
+        self.assertEqual(result.verdict, "SSV OK")
+        self.assertEqual(result.warnings, [])
+
+    def test_sparse_orange_red_run_returns_ssv_nok(self) -> None:
+        result = analyze_kpi_bitmap(make_sparse_red_run_kpi_bitmap(), "data:image/png;base64,", "SINR", "quality")
+
+        self.assertTrue(result.is_failure)
+        self.assertEqual(result.verdict, "SSV NOK")
+        self.assertGreaterEqual(result.metrics["continuous_red_count"], 6)
+        self.assertIn("Continuous red points detected", " ".join(result.warnings))
+
+    def test_top_label_noise_is_not_counted_as_degradation(self) -> None:
+        result = analyze_kpi_bitmap(make_kpi_bitmap_with_top_label_noise(), "data:image/png;base64,", "RxLev", "coverage")
+
+        self.assertFalse(result.is_failure)
+        self.assertEqual(result.verdict, "SSV OK")
+        self.assertEqual(result.metrics["continuous_red_count"], 0)
+
+    def test_center_two_row_label_noise_is_not_counted_as_degradation(self) -> None:
+        result = analyze_kpi_bitmap(make_kpi_bitmap_with_center_label_noise(), "data:image/png;base64,", "EcNo", "quality")
+
+        self.assertFalse(result.is_failure)
+        self.assertEqual(result.verdict, "SSV OK")
+        self.assertEqual(result.metrics["continuous_red_count"], 0)
+
+    def test_large_red_run_returns_ssv_nok(self) -> None:
+        result = analyze_kpi_bitmap(make_large_red_run_kpi_bitmap(), "data:image/png;base64,", "SINR", "quality")
+
+        self.assertTrue(result.is_failure)
+        self.assertEqual(result.verdict, "SSV NOK")
+        self.assertEqual(result.metrics["continuous_red_count"], 6)
+        self.assertIn("Continuous red points detected", " ".join(result.warnings))
+
+    def test_kpi_bitmap_uses_biggest_red_run(self) -> None:
+        result = analyze_kpi_bitmap(make_kpi_bitmap_with_two_red_runs(), "data:image/png;base64,", "RSRP", "coverage")
+
+        self.assertTrue(result.is_failure)
+        self.assertEqual(result.verdict, "SSV NOK")
+        self.assertEqual(result.metrics["red_cluster_strategy"], "ordered_chain")
+        self.assertEqual(result.metrics["continuous_red_count"], 8)
+        self.assertEqual(result.metrics["degradation_run_count"], 2)
+        self.assertIn("Continuous red points detected (8).", result.warnings)
+
+    def test_text_like_label_cluster_is_removed_from_red_point_count(self) -> None:
+        result = analyze_kpi_bitmap(make_kpi_bitmap_with_label_cluster_and_real_run(), "data:image/png;base64,", "SINR", "quality")
+
+        self.assertTrue(result.is_failure)
+        self.assertEqual(result.verdict, "SSV NOK")
+        self.assertEqual(result.metrics["continuous_red_count"], 10)
+        self.assertEqual(result.metrics["red_point_count"], 10)
+        self.assertEqual(result.metrics["degradation_run_count"], 1)
+
+    def test_red_legend_filters_out_orange_noise(self) -> None:
+        result = analyze_kpi_bitmap(make_kpi_bitmap_with_red_legend_and_orange_noise(), "data:image/png;base64,", "SINR", "quality")
+
+        self.assertTrue(result.is_failure)
+        self.assertEqual(result.verdict, "SSV NOK")
+        self.assertEqual(result.metrics["continuous_red_count"], 6)
+        self.assertEqual(result.metrics["red_point_count"], 6)
+        self.assertEqual(result.metrics["degradation_run_count"], 1)
+
+    def test_detect_legend_swatches_keeps_degraded_bottom_swatch(self) -> None:
+        bitmap = make_sparse_red_run_kpi_bitmap()
+        swatches = detect_legend_swatches(
+            bitmap,
+            int(bitmap.width * LEGEND_X_RATIO),
+            int(bitmap.height * LEGEND_Y_RATIO),
+        )
+
+        self.assertEqual(len(swatches), 3)
+        degraded = resolve_degraded_swatch(swatches)
+        self.assertIsNotNone(degraded)
+        self.assertGreater(degraded.center_y, swatches[0].center_y)
+        self.assertLess(abs(degraded.hue_degrees - 24.0), 8.0)
+
+    def test_hotspot_circle_contains_all_pixels_in_biggest_run(self) -> None:
+        bitmap = make_kpi_bitmap_with_two_red_runs()
+        red_components = [component for component in extract_kpi_point_components(bitmap) if is_red_component(bitmap, component)]
+        highlighted_clusters = sorted(
+            [cluster for cluster in cluster_components(red_components, link_distance=80.0) if len(cluster) >= 6],
+            key=lambda cluster: -len(cluster),
+        )
+
+        center_x, center_y, radius = hotspot_circle(highlighted_clusters[0])
+        for component in highlighted_clusters[0]:
+            for pixel_x, pixel_y in component["pixels"]:
+                self.assertLessEqual(math.hypot(pixel_x - center_x, pixel_y - center_y), radius + 1e-6)
 
     def test_late_ho_warning_downgrades_one_way_intrusion(self) -> None:
         detected_colors = [
@@ -381,6 +612,46 @@ class AnalysisTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(supports_direct_embedded_image_processing() and Image is not None, "Pillow direct image path unavailable")
+class ImagingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        clear_prepared_image_cache()
+        self.original_mode = os.environ.get("SSV_IMAGE_PREP_MODE")
+        os.environ["SSV_IMAGE_PREP_MODE"] = "upscale"
+
+    def tearDown(self) -> None:
+        clear_prepared_image_cache()
+        if self.original_mode is None:
+            os.environ.pop("SSV_IMAGE_PREP_MODE", None)
+        else:
+            os.environ["SSV_IMAGE_PREP_MODE"] = self.original_mode
+
+    def test_prepare_image_bytes_reuses_large_rgb_png_without_reencoding(self) -> None:
+        image = Image.new("RGB", (1700, 24), (12, 34, 56))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+
+        prepared_bytes, mime_type = prepare_image_bytes_for_analysis(image_bytes)
+
+        self.assertEqual(mime_type, "image/png")
+        self.assertEqual(prepared_bytes, image_bytes)
+
+    def test_prepare_image_bytes_uses_cache_before_reopening_image(self) -> None:
+        image = Image.new("RGB", (1700, 24), (90, 45, 30))
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+
+        first_bytes, _ = prepare_image_bytes_for_analysis(image_bytes)
+
+        with patch("ssv_validation.imaging.Image.open", side_effect=AssertionError("cache should avoid reopening")):
+            second_bytes, second_mime = prepare_image_bytes_for_analysis(image_bytes)
+
+        self.assertEqual(second_mime, "image/png")
+        self.assertEqual(first_bytes, second_bytes)
+
+
 class ServiceTests(unittest.TestCase):
     def test_validate_workbook_keeps_multiple_same_target_images(self) -> None:
         candidates = [
@@ -448,6 +719,8 @@ class ServiceTests(unittest.TestCase):
 
         with (
             patch("ssv_validation.service.select_target_images", return_value=candidates),
+            patch("ssv_validation.service.supports_direct_embedded_image_processing", return_value=False),
+            patch("ssv_validation.service.prepare_image_for_analysis", return_value=(b"prepared", "image/png")),
             patch("ssv_validation.service.convert_image_to_bmp"),
             patch(
                 "ssv_validation.service.decode_bmp",
@@ -503,6 +776,8 @@ class ServiceTests(unittest.TestCase):
 
         with (
             patch("ssv_validation.service.select_target_images", return_value=candidates),
+            patch("ssv_validation.service.supports_direct_embedded_image_processing", return_value=False),
+            patch("ssv_validation.service.prepare_image_for_analysis", return_value=(b"prepared", "image/png")),
             patch("ssv_validation.service.convert_image_to_bmp"),
             patch("ssv_validation.service.decode_bmp", return_value=Bitmap(width=1, height=1, pixels=[[(0, 0, 0)]])),
             patch(
@@ -526,6 +801,57 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(result["isFailure"])
         self.assertEqual(result["analyses"][-1]["label"], "Avg Throughput")
         self.assertEqual(result["analyses"][-1]["verdict"], "SSV NOK")
+
+    def test_validate_workbook_can_keep_debug_workspace(self) -> None:
+        candidates = [
+            (
+                ImageCandidate(
+                    sheet_name="3. L800 DT en mobilite",
+                    sheet_path="xl/worksheets/sheet3.xml",
+                    drawing_path="xl/drawings/drawing3.xml",
+                    media_path="xl/media/image7.png",
+                    target_key="quality_sinr",
+                    target_label="Quality (SINR)",
+                    anchor_row=1,
+                    anchor_col=9,
+                    score=810.0,
+                    analysis_kind="degradation",
+                    metric_group="quality",
+                    metric_name="SINR",
+                    nearby_text=["J2: 800 Cells Qualite (SINR)"],
+                    caption_ref="J2",
+                ),
+                b"\x89PNG\r\n\x1a\nmock",
+                "image/png",
+            )
+        ]
+
+        with (
+            patch("ssv_validation.service.select_target_images", return_value=candidates),
+            patch("ssv_validation.service.supports_direct_embedded_image_processing", return_value=False),
+            patch("ssv_validation.service.prepare_image_for_analysis", return_value=(b"prepared", "image/png")),
+            patch("ssv_validation.service.convert_image_to_bmp"),
+            patch("ssv_validation.service.decode_bmp", return_value=Bitmap(width=1, height=1, pixels=[[(0, 0, 0)]])),
+            patch(
+                "ssv_validation.service.analyze_kpi_bitmap",
+                return_value=AnalysisOutcome(
+                    cross=False,
+                    verdict="SSV OK",
+                    detected_colors=[],
+                    metrics={"metric_name": "SINR", "metric_group": "quality"},
+                    site_center={"x": 0.0, "y": 0.0},
+                    annotated_preview="data:image/svg+xml;base64,map",
+                    analysis_kind="degradation",
+                    is_failure=False,
+                ),
+            ),
+            patch("ssv_validation.service.extract_avg_throughput_metrics", return_value=None),
+            patch("ssv_validation.service.persist_debug_workspace", return_value=Path("/tmp/ssv-debug")),
+            patch.dict(os.environ, {"SSV_KEEP_TEMP_WORKSPACE": "1"}, clear=False),
+        ):
+            result = validate_ssv_workbook(b"fake", "fake.xlsx")
+
+        self.assertEqual(result["debugWorkspace"], "/tmp/ssv-debug")
 
 
 class LegendMappingTests(unittest.TestCase):

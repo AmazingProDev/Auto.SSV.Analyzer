@@ -68,8 +68,8 @@ def build_throughput_summary_preview(
     ul_threshold: float | None,
     verdict: str,
 ) -> str:
-    verdict_bg = "#431217" if verdict == "SSV NOK" else "#10331b"
-    verdict_fg = "#ffd9db" if verdict == "SSV NOK" else "#c8ffd7"
+    verdict_bg = "#FF2900" if verdict == "SSV NOK" else "#00FF37"
+    verdict_fg = "#fff5f2" if verdict == "SSV NOK" else "#001f08"
     dl_threshold_text = f"{dl_threshold:.0f} Mbps" if dl_threshold is not None else "n/a"
     ul_threshold_text = f"{ul_threshold:.0f} Mbps" if ul_threshold is not None else "n/a"
     svg = f"""

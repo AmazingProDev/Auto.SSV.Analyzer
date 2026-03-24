@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .acceleration import bitmap_rgb_rows, rgb_pixel
 from .analyzer import COLOR_SATURATION_THRESHOLD, COLOR_VALUE_THRESHOLD, rgb_distance, rgb_to_hsv
 from .imaging import Bitmap
 from .models import DetectedColor, ImageCandidate
@@ -309,7 +310,8 @@ def ensure_ocr_binary() -> Path:
 def write_legend_crop_bmp(bitmap: Bitmap, output_path: Path) -> None:
     crop_width = max(1, int(bitmap.width * LEGEND_CROP_X_RATIO))
     crop_height = max(1, int(bitmap.height * LEGEND_CROP_Y_RATIO))
-    pixels = [row[:crop_width] for row in bitmap.pixels[:crop_height]]
+    rows = bitmap_rgb_rows(bitmap)
+    pixels = [row[:crop_width] for row in rows[:crop_height]]
 
     row_stride = ((crop_width * 3 + 3) // 4) * 4
     image_size = row_stride * crop_height
@@ -420,7 +422,7 @@ def sample_legend_row_color(bitmap: Bitmap, row: dict[str, object]) -> tuple[int
     samples: list[tuple[int, int, int]] = []
     for y in range(y0, y1):
         for x in range(x_end):
-            rgb = bitmap.pixels[y][x]
+            rgb = rgb_pixel(bitmap, x, y)
             hue, saturation, value = rgb_to_hsv(*rgb)
             if saturation >= COLOR_SATURATION_THRESHOLD and value >= COLOR_VALUE_THRESHOLD:
                 samples.append(rgb)

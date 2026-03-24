@@ -14,6 +14,8 @@
     const annotatedPreviewImage = document.getElementById('ssv-annotated-image');
     const verdict = document.getElementById('ssv-verdict');
     const verdictMeta = document.getElementById('ssv-verdict-meta');
+    const summaryControls = document.getElementById('ssv-summary-controls');
+    const toggleAnalysesButton = document.getElementById('ssv-toggle-analyses');
     const colorList = document.getElementById('ssv-color-list');
     const metricsGrid = document.getElementById('ssv-metrics-grid');
     const siteCenter = document.getElementById('ssv-site-center');
@@ -24,6 +26,11 @@
     const metricsCard = metricsGrid ? metricsGrid.closest('.ssv-detail-card') : null;
     const siteCenterCard = siteCenter ? siteCenter.closest('.ssv-detail-card') : null;
     const selectionCard = selectionMeta ? selectionMeta.closest('.ssv-detail-card') : null;
+    let latestAnalyses = [];
+    let showAllAnalyses = false;
+    let latestIncludesAllPreviews = false;
+    let latestWorkbookFile = null;
+    let pendingShowAllAfterReload = false;
 
     function getApiUrl() {
         if (window.location.protocol === 'file:') {
@@ -58,6 +65,11 @@
     }
 
     function resetState() {
+        latestAnalyses = [];
+        showAllAnalyses = false;
+        latestIncludesAllPreviews = false;
+        latestWorkbookFile = null;
+        pendingShowAllAfterReload = false;
         setProgress(0, 'Select an .xlsx SSV workbook to begin.');
         hideError();
         if (summaryShell) {
@@ -72,6 +84,13 @@
         }
         if (verdictMeta) {
             verdictMeta.hidden = true;
+            verdictMeta.textContent = '';
+        }
+        if (summaryControls) {
+            summaryControls.hidden = true;
+        }
+        if (toggleAnalysesButton) {
+            toggleAnalysesButton.textContent = 'Show all analysis';
         }
         if (colorsCard) {
             colorsCard.hidden = true;
@@ -128,6 +147,55 @@
         progressLabel.textContent = label;
     }
 
+    function formatWarningSummary(warning) {
+        return String(warning || '')
+            .replace(/^Continuous red points detected\s*/i, 'Continuous red run ')
+            .replace(/\.$/, '');
+    }
+
+    function formatTechnologyName(analysis) {
+        return analysis.selection?.sheetName || 'SSV';
+    }
+
+    function formatFailureMetricName(analysis) {
+        const metrics = analysis.metrics || {};
+        const metricName = metrics.metric_name || analysis.selection?.metricName || analysis.label || getAnalysisDisplayTitle(analysis);
+
+        if (metricName === 'RSRQ' || metricName === 'RxQual' || metricName === 'EcIo' || metricName === 'EcNo') {
+            return metricName;
+        }
+        if (metricName === 'RSRP' || metricName === 'RxLev' || metricName === 'RSCP') {
+            return metricName;
+        }
+        if (metricName === 'DL Throughput') {
+            return 'Throughput DL';
+        }
+        if (metricName === 'UL Throughput') {
+            return 'Throughput UL';
+        }
+        return metricName;
+    }
+
+    function buildFailureSummary(analyses) {
+        const failedAnalyses = analyses.filter((analysis) => Boolean(analysis.isFailure ?? analysis.cross));
+        if (!failedAnalyses.length) {
+            return '';
+        }
+
+        const summaryParts = failedAnalyses.slice(0, 4).map((analysis) => {
+            const metricName = formatFailureMetricName(analysis);
+            const technologyName = formatTechnologyName(analysis);
+            return `${metricName} of ${technologyName} is DEGRADED`;
+        });
+
+        const extraCount = failedAnalyses.length - summaryParts.length;
+        if (extraCount > 0) {
+            summaryParts.push(`+${extraCount} more issue${extraCount > 1 ? 's' : ''}`);
+        }
+
+        return `SSV NOK : ${summaryParts.join(' | ')}`;
+    }
+
     function renderColors(colors, target) {
         target.innerHTML = '';
         colors.forEach((entry) => {
@@ -174,8 +242,29 @@
         return analysis.verdict;
     }
 
+    function getAnnotatedBadgeText(analysis) {
+        const metrics = analysis.metrics || {};
+        const metricName = metrics.metric_name || analysis.selection?.metricName || analysis.label || 'SSV';
+        if (analysis.analysisKind === 'degradation') {
+            const suffix = Boolean(analysis.isFailure ?? analysis.cross) ? 'NOK' : 'OK';
+            return `${metricName} ${suffix}`;
+        }
+        if (analysis.analysisKind === 'cross') {
+            return analysis.verdict || 'No cross detected';
+        }
+        return analysis.verdict || metricName;
+    }
+
     function getThroughputSummary(analyses) {
         return analyses.find((analysis) => analysis.analysisKind === 'throughput_average') || null;
+    }
+
+    function getVisibleAnalyses(analyses) {
+        if (showAllAnalyses) {
+            return analyses;
+        }
+        const failedAnalyses = analyses.filter((analysis) => Boolean(analysis.isFailure ?? analysis.cross));
+        return failedAnalyses.length ? failedAnalyses : analyses;
     }
 
     function createThroughputDetails(analysis, throughputSummary) {
@@ -241,10 +330,11 @@
     function renderAnalysisCards(analyses) {
         analysisList.innerHTML = '';
         analysisList.hidden = false;
+        const visibleAnalyses = getVisibleAnalyses(analyses);
         const throughputSummary = getThroughputSummary(analyses);
-        const orderedAnalyses = orderAnalyses(analyses);
+        const orderedAnalyses = orderAnalyses(visibleAnalyses);
 
-        if (throughputSummary) {
+        if (throughputSummary && orderedAnalyses.some((analysis) => ((analysis.metrics || {}).metric_group || analysis.selection?.metricGroup) === 'throughput')) {
             analysisList.appendChild(createThroughputNotice());
         }
 
@@ -259,13 +349,7 @@
             const title = document.createElement('div');
             title.className = 'ssv-analysis-title';
             title.textContent = getAnalysisDisplayTitle(analysis);
-
-            const chip = document.createElement('div');
-            chip.className = `ssv-analysis-chip ${isFailure ? 'cross' : 'clear'}`;
-            chip.textContent = getAnalysisDisplayVerdict(analysis);
-
             header.appendChild(title);
-            header.appendChild(chip);
 
             const note = document.createElement('div');
             note.className = 'ssv-analysis-note';
@@ -310,8 +394,12 @@
                 const annotatedImage = document.createElement('img');
                 annotatedImage.src = analysis.annotatedPreview || analysis.previewImage;
                 annotatedImage.alt = `${analysis.label || 'SSV'} annotated preview`;
+                const annotatedBadge = document.createElement('div');
+                annotatedBadge.className = `ssv-map-badge ${isFailure ? 'cross' : 'clear'}`;
+                annotatedBadge.textContent = getAnnotatedBadgeText(analysis);
                 annotatedFigure.appendChild(annotatedCaption);
                 annotatedFigure.appendChild(annotatedImage);
+                annotatedFigure.appendChild(annotatedBadge);
                 grid.appendChild(annotatedFigure);
                 hasVisual = true;
             }
@@ -335,19 +423,31 @@
 
     function renderResult(payload, filename) {
         const analyses = payload.analyses && payload.analyses.length ? payload.analyses : [payload];
+        latestAnalyses = analyses;
+        showAllAnalyses = pendingShowAllAfterReload;
+        latestIncludesAllPreviews = Boolean(payload.includesAllPreviews);
+        pendingShowAllAfterReload = false;
         verdict.textContent = payload.verdict;
         verdict.className = `ssv-verdict-card ${payload.isFailure ? 'cross' : 'clear'}`;
         if (summaryShell) {
             summaryShell.hidden = false;
         }
+        const failureSummary = buildFailureSummary(analyses);
         if (summaryGrid) {
-            summaryGrid.classList.add('compact');
+            summaryGrid.classList.toggle('compact', !failureSummary);
         }
         if (previewGrid) {
             previewGrid.hidden = true;
         }
         if (verdictMeta) {
-            verdictMeta.hidden = true;
+            verdictMeta.hidden = !failureSummary;
+            verdictMeta.textContent = failureSummary;
+        }
+        if (summaryControls && toggleAnalysesButton) {
+            const failedCount = analyses.filter((analysis) => Boolean(analysis.isFailure ?? analysis.cross)).length;
+            const canToggle = failedCount > 0 && failedCount < analyses.length;
+            summaryControls.hidden = !canToggle;
+            toggleAnalysesButton.textContent = showAllAnalyses ? 'Show only NOK' : 'Show all analysis';
         }
         if (colorsCard) {
             colorsCard.hidden = true;
@@ -382,8 +482,23 @@
         renderAnalysisCards(analyses);
     }
 
-    function handleUpload(file) {
+    if (toggleAnalysesButton) {
+        toggleAnalysesButton.addEventListener('click', function () {
+            if (!showAllAnalyses && !latestIncludesAllPreviews && latestWorkbookFile) {
+                pendingShowAllAfterReload = true;
+                toggleAnalysesButton.textContent = 'Loading all analysis...';
+                handleUpload(latestWorkbookFile, { includeAllPreviews: true, preserveSelection: true });
+                return;
+            }
+            showAllAnalyses = !showAllAnalyses;
+            toggleAnalysesButton.textContent = showAllAnalyses ? 'Show only NOK' : 'Show all analysis';
+            renderAnalysisCards(latestAnalyses);
+        });
+    }
+
+    function handleUpload(file, options) {
         if (!file) return;
+        const uploadOptions = options || {};
 
         if (!file.name.toLowerCase().endsWith('.xlsx')) {
             showError('Invalid file format. Please upload an .xlsx workbook.');
@@ -395,12 +510,14 @@
             summaryShell.hidden = true;
         }
         analysisList.hidden = true;
+        latestWorkbookFile = file;
         uploadHint.textContent = `Selected workbook: ${file.name}`;
         setProgress(8, 'Uploading workbook...');
 
         const formData = new FormData();
         formData.append('file', file);
         formData.append('debug', '1');
+        formData.append('includeAllPreviews', uploadOptions.includeAllPreviews ? '1' : '0');
 
         const xhr = new XMLHttpRequest();
         xhr.open('POST', getApiUrl(), true);

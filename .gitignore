@@ -8,3 +8,11 @@ test_images/
 .idea/
 .vscode/
 __pycache__/
+.venv/
+.cache/
+.claude/
+.tmp*
+0
+1
+SA_Neighbors/
+node_modules/

@@ -18,17 +18,24 @@ let currentAngle = 0; // 0 to 359 degrees
 let siteLocation = [48.8584, 2.2945];
 
 // Radio Config State
-let radioConfig = { avant: [], apres: [] }; // { name: 'Secteur 1', azimuth: 90, url: '...', target: '...' }
+let radioConfig = { avant: [], apres: [] }; // { name: 'Secteur 1', azimuth: 90, url: '...', urls: [], target: '...', targets: [] }
 let activeConfigStr = 'avant';
 const configSelect = document.getElementById('config-select');
 const sectorHud = document.getElementById('sector-hud');
 const sectorHudTitle = document.getElementById('sector-hud-title');
 const sectorHudImg = document.getElementById('sector-hud-img');
+const sectorHudPrev = document.getElementById('sector-hud-prev');
+const sectorHudNext = document.getElementById('sector-hud-next');
+const sectorHudCount = document.getElementById('sector-hud-count');
+const sectorHudSource = document.getElementById('sector-hud-source');
 const hudCgps = document.getElementById('hud-cgps');
 const hudDirection = document.getElementById('hud-direction');
 const hudAzimuts = document.getElementById('hud-azimuts');
 const displaySiteName = document.getElementById('display-site-name');
 let sectorPolygons = []; // map layers
+let currentHudSector = null;
+let currentHudSectorKey = '';
+let currentHudImageIndex = 0;
 
 // Map Objects
 let map = null;
@@ -37,6 +44,84 @@ let viewCone = null;
 
 // The field of view of a single photo
 const FOV_DEGREES = 30;
+
+function colLettersToIndex(colStr) {
+    return colStr
+        .toUpperCase()
+        .split('')
+        .reduce((acc, char) => (acc * 26) + (char.charCodeAt(0) - 64), 0) - 1;
+}
+
+function getSectorImageMedia(sector) {
+    if (!sector) return [];
+    if (Array.isArray(sector.media) && sector.media.length > 0) return sector.media;
+    if (Array.isArray(sector.urls) && sector.urls.length > 0) {
+        return sector.urls.map((url) => ({ url, sourceLabel: '' }));
+    }
+    return sector.url ? [{ url: sector.url, sourceLabel: '' }] : [];
+}
+
+function getSectorHudKey(sector) {
+    return sector ? `${activeConfigStr}:${sector.name}:${sector.azimuth}` : '';
+}
+
+function configHasSectorImages(config) {
+    return (config || []).some((sector) => getSectorImageMedia(sector).length > 0);
+}
+
+function renderSectorHud(sector) {
+    const mediaItems = getSectorImageMedia(sector);
+    if (!sector || mediaItems.length === 0) {
+        sectorHud.classList.remove('visible');
+        currentHudSector = null;
+        currentHudSectorKey = '';
+        currentHudImageIndex = 0;
+        sectorLightboxOpen = false;
+        if (sectorHudCount) {
+            sectorHudCount.hidden = true;
+            sectorHudCount.textContent = '1 / 1';
+        }
+        if (sectorHudPrev) sectorHudPrev.hidden = true;
+        if (sectorHudNext) sectorHudNext.hidden = true;
+        if (sectorHudSource) {
+            sectorHudSource.hidden = true;
+            sectorHudSource.textContent = '';
+        }
+        return;
+    }
+
+    const normalizedIndex = ((currentHudImageIndex % mediaItems.length) + mediaItems.length) % mediaItems.length;
+    currentHudImageIndex = normalizedIndex;
+    currentHudSector = sector;
+    currentHudSectorKey = getSectorHudKey(sector);
+    sectorHudTitle.textContent = `${sector.name} (${sector.azimuth}°)`;
+
+    const activeMedia = mediaItems[normalizedIndex];
+    if (sectorHudImg.src !== activeMedia.url) {
+        sectorHudImg.src = activeMedia.url;
+    }
+    if (sectorHudSource) {
+        sectorHudSource.hidden = !activeMedia.sourceLabel;
+        sectorHudSource.textContent = activeMedia.sourceLabel || '';
+    }
+
+    const hasMultipleImages = mediaItems.length > 1;
+    if (sectorHudCount) {
+        sectorHudCount.hidden = !hasMultipleImages;
+        sectorHudCount.textContent = `${normalizedIndex + 1} / ${mediaItems.length}`;
+    }
+    if (sectorHudPrev) sectorHudPrev.hidden = !hasMultipleImages;
+    if (sectorHudNext) sectorHudNext.hidden = !hasMultipleImages;
+
+    sectorHud.classList.add('visible');
+}
+
+function shiftSectorHudImage(step) {
+    const mediaItems = getSectorImageMedia(currentHudSector);
+    if (mediaItems.length <= 1) return;
+    currentHudImageIndex = (currentHudImageIndex + step + mediaItems.length) % mediaItems.length;
+    renderSectorHud(currentHudSector);
+}
 
 // --- UPLOAD LOGIC ---
 
@@ -270,24 +355,33 @@ async function handleExcelUpload(file) {
             });
         });
         
-        let avantPhotoAnchorRow = null;
-        let apresPhotoAnchorRow = null;
+        let avantPhotoAnchorRows = [];
+        let apresPhotoAnchorRows = [];
+        const sectorRowSourceLabels = {};
         if (photoMainRow) {
             let foundAvantHeader = false;
             let foundApresHeader = false;
-            for(let r=photoMainRow+1; r<photoMainRow+100; r++) {
+            let currentPhotoSection = 'Photos Azimut';
+            const maxSheetRow = Math.max(...Object.keys(cellsData).map(Number));
+            for(let r=photoMainRow+1; r<=maxSheetRow; r++) {
                 if(!cellsData[r]) continue;
                 let textConcat = Object.values(cellsData[r]).filter(c=>c.isStr && typeof c.value === 'string').map(c=>c.value.toUpperCase()).join(' ');
                 
-                if (textConcat.includes('AVANT OPTIMISATION')) { foundAvantHeader = true; continue; }
-                if (textConcat.includes('APRES OPTIMISATION')) { foundApresHeader = true; continue; }
+                if (textConcat.includes('AVANT OPTIMISATION')) { foundAvantHeader = true; foundApresHeader = false; continue; }
+                if (textConcat.includes('APRES OPTIMISATION')) { foundApresHeader = true; foundAvantHeader = false; continue; }
+                if (textConcat.includes('APPENDIX 2') || textConcat.includes('ANTENNAS PHOTOS')) currentPhotoSection = 'Antennas Photos';
+                if (textConcat.includes('APPENDIX 3') || textConcat.includes('TILT MEC') || textConcat.includes('TILT MÉC')) currentPhotoSection = 'Photos Tilt Méc';
+                if (textConcat.includes('APPENDIX 4') || textConcat.includes('TILT ELEC')) currentPhotoSection = 'Photos Tilt Elec';
                 
                 if (textConcat.includes('SECTEUR 1')) {
-                    if (foundAvantHeader && !avantPhotoAnchorRow) avantPhotoAnchorRow = r;
-                    else if (foundApresHeader && !apresPhotoAnchorRow) apresPhotoAnchorRow = r;
+                    if (foundAvantHeader) {
+                        avantPhotoAnchorRows.push(r);
+                        sectorRowSourceLabels[r] = currentPhotoSection;
+                    } else if (foundApresHeader) {
+                        apresPhotoAnchorRows.push(r);
+                        sectorRowSourceLabels[r] = currentPhotoSection;
+                    }
                 }
-                
-                if (avantPhotoAnchorRow && apresPhotoAnchorRow) break;
             }
         }
         
@@ -300,8 +394,8 @@ async function handleExcelUpload(file) {
                 }
            });
         }
-        if (avantPhotoAnchorRow) populateAngleRowsForSectors(avantPhotoAnchorRow);
-        if (apresPhotoAnchorRow) populateAngleRowsForSectors(apresPhotoAnchorRow);
+        apresPhotoAnchorRows.forEach(populateAngleRowsForSectors);
+        const sectorAnchorRows = new Set(apresPhotoAnchorRows);
 
         // 7. Drawing Rels Mapping
         const relsXmlObj = zip.file('xl/drawings/_rels/drawing1.xml.rels');
@@ -334,15 +428,26 @@ async function handleExcelUpload(file) {
                     const imgRow = parseInt(rowNode.textContent);
                     const imgColRaw = parseInt(colNode.textContent);
                     
+                    let matchedAnchorRow = null;
                     if (angleRows[imgRow]) {
+                        matchedAnchorRow = imgRow;
+                    } else if (sectorAnchorRows.has(imgRow - 1)) {
+                        matchedAnchorRow = imgRow - 1;
+                    }
+
+                    if (matchedAnchorRow !== null) {
                         const blip1 = anchor.getElementsByTagName("a:blip")[0];
                         const blip2 = anchor.getElementsByTagName("blip")[0];
                         const blip = blip1 || blip2;
                         if (blip) {
                             const rId = blip.getAttribute("r:embed");
                             if (rId && drawingRels[rId]) {
-                                if (!angleRows[imgRow].images) angleRows[imgRow].images = [];
-                                angleRows[imgRow].images.push({ col: imgColRaw, target: drawingRels[rId] });
+                                if (!angleRows[matchedAnchorRow].images) angleRows[matchedAnchorRow].images = [];
+                                angleRows[matchedAnchorRow].images.push({
+                                    col: imgColRaw,
+                                    target: drawingRels[rId],
+                                    sourceLabel: sectorRowSourceLabels[matchedAnchorRow] || ''
+                                });
                             }
                         }
                     }
@@ -361,47 +466,108 @@ async function handleExcelUpload(file) {
                 return a.colStr.localeCompare(b.colStr);
             });
             images.sort((a, b) => a.col - b.col);
-            
-            for (let i = 0; i < Math.min(rowData.length, images.length); i++) {
-                const labelAngle = rowData[i].angle;
-                if (typeof labelAngle === 'number') {
-                    extractedImages.push({ angle: labelAngle, target: images[i].target });
-                } else {
-                    const rowN = parseInt(rowStr);
-                    if (rowN === avantPhotoAnchorRow) {
-                         let cfg = avantConfig.find(c => c.name === labelAngle);
-                         if (cfg) cfg.target = images[i].target;
-                    } else if (rowN === apresPhotoAnchorRow) {
-                         let cfg = apresConfig.find(c => c.name === labelAngle);
-                         if (cfg) cfg.target = images[i].target;
-                    }
+
+            if (rowData.length === 0 || images.length === 0) return;
+
+            const firstLabel = rowData[0];
+            if (typeof firstLabel.angle === 'number') {
+                for (let i = 0; i < Math.min(rowData.length, images.length); i++) {
+                    extractedImages.push({ angle: rowData[i].angle, target: images[i].target });
                 }
+                return;
             }
+
+            const labels = rowData.map((entry, index) => ({
+                ...entry,
+                index,
+                colIndex: colLettersToIndex(entry.colStr)
+            }));
+            const rowN = parseInt(rowStr);
+            const configList = apresPhotoAnchorRows.includes(rowN) ? apresConfig : null;
+            if (!configList) return;
+
+            images.forEach((image) => {
+                const labelIndex = labels.findIndex((label, idx) => {
+                    const nextLabel = labels[idx + 1];
+                    return image.col >= label.colIndex && (!nextLabel || image.col < nextLabel.colIndex);
+                });
+                if (labelIndex === -1) return;
+
+                const matchedLabel = labels[labelIndex];
+                const cfg = configList.find((entry) => entry.name === matchedLabel.angle);
+                if (!cfg) return;
+                if (!cfg.targets) cfg.targets = [];
+                if (!cfg.mediaTargets) cfg.mediaTargets = [];
+                cfg.targets.push(image.target);
+                cfg.mediaTargets.push({
+                    target: image.target,
+                    sourceLabel: image.sourceLabel || ''
+                });
+            });
         });
-        
-        if (extractedImages.length < 12) {
-            throw new Error(`Only found ${extractedImages.length}/12 panoramic photos. Expected 12 images correctly anchored under 'DEGRÉS' cells.`);
+
+        avantConfig.forEach((cfg) => {
+            if (cfg.targets && cfg.targets.length > 0) cfg.target = cfg.targets[0];
+        });
+        apresConfig.forEach((cfg) => {
+            if (cfg.targets && cfg.targets.length > 0) cfg.target = cfg.targets[0];
+        });
+
+        async function createObjectUrlFromTarget(target) {
+            if (!target) return null;
+            let mediaPath = target.startsWith('../') ? target.substring(3) : target;
+            mediaPath = 'xl/' + mediaPath;
+
+            const mediaFile = zip.file(mediaPath);
+            if (!mediaFile) return null;
+
+            const ext = mediaPath.split('.').pop().toLowerCase();
+            let mime = 'image/jpeg';
+            if (ext === 'png') mime = 'image/png';
+
+            const blob = await mediaFile.async('blob');
+            const typedBlob = new Blob([blob], { type: mime });
+            return URL.createObjectURL(typedBlob);
         }
-        
+
         // 10. Load Binaries
         async function loadBinaries(itemsArray) {
             for (let i = 0; i < itemsArray.length; i++) {
                 const item = itemsArray[i];
-                if (!item.target) continue;
-                let mediaPath = item.target.startsWith('../') ? item.target.substring(3) : item.target;
-                mediaPath = 'xl/' + mediaPath; 
-                
-                const mediaFile = zip.file(mediaPath);
-                if (mediaFile) {
-                    const ext = mediaPath.split('.').pop().toLowerCase();
-                    let mime = 'image/jpeg';
-                    if (ext === 'png') mime = 'image/png';
-                    
-                    const blob = await mediaFile.async('blob');
-                    const typedBlob = new Blob([blob], { type: mime });
-                    item.url = URL.createObjectURL(typedBlob);
+                if (Array.isArray(item.mediaTargets) && item.mediaTargets.length > 0) {
+                    item.media = [];
+                    item.urls = [];
+                    for (const mediaTarget of item.mediaTargets) {
+                        const imageUrl = await createObjectUrlFromTarget(mediaTarget.target);
+                        if (!imageUrl) continue;
+                        item.media.push({
+                            target: mediaTarget.target,
+                            url: imageUrl,
+                            sourceLabel: mediaTarget.sourceLabel || ''
+                        });
+                        item.urls.push(imageUrl);
+                    }
+                    if (item.media.length > 0) item.url = item.media[0].url;
+                    continue;
                 }
+                if (Array.isArray(item.targets) && item.targets.length > 0) {
+                    item.urls = [];
+                    for (const target of item.targets) {
+                        const imageUrl = await createObjectUrlFromTarget(target);
+                        if (imageUrl) item.urls.push(imageUrl);
+                    }
+                    if (item.urls.length > 0) item.url = item.urls[0];
+                    continue;
+                }
+
+                if (!item.target) continue;
+                const imageUrl = await createObjectUrlFromTarget(item.target);
+                if (imageUrl) item.url = imageUrl;
             }
+        }
+
+        if (extractedImages.length < 12) {
+            throw new Error(`Only found ${extractedImages.length}/12 panoramic photos. Expected 12 images correctly anchored under 'DEGRÉS' cells.`);
         }
         
         await loadBinaries(extractedImages);
@@ -414,8 +580,8 @@ async function handleExcelUpload(file) {
         }));
         photos.sort((a, b) => a.angle - b.angle);
         
-        radioConfig.avant = avantConfig.filter(c => c.url);
-        radioConfig.apres = apresConfig.filter(c => c.url);
+        radioConfig.avant = avantConfig.filter(c => c.azimuth !== null || c.url || (Array.isArray(c.urls) && c.urls.length > 0));
+        radioConfig.apres = apresConfig.filter(c => c.azimuth !== null || c.url || (Array.isArray(c.urls) && c.urls.length > 0));
         
         if (displaySiteName) {
             displaySiteName.textContent = file.name.replace('.xlsx', '');
@@ -433,7 +599,13 @@ async function handleExcelUpload(file) {
         
         if (radioConfig.avant.length > 0 || radioConfig.apres.length > 0) {
             configSelect.style.display = 'block';
-            activeConfigStr = radioConfig.avant.length > 0 ? 'avant' : 'apres';
+            if (configHasSectorImages(radioConfig.apres)) {
+                activeConfigStr = 'apres';
+            } else if (configHasSectorImages(radioConfig.avant)) {
+                activeConfigStr = 'avant';
+            } else {
+                activeConfigStr = radioConfig.avant.length > 0 ? 'avant' : 'apres';
+            }
             configSelect.value = activeConfigStr;
         } else {
             configSelect.style.display = 'none';
@@ -453,6 +625,7 @@ async function handleExcelUpload(file) {
 generateBtn.addEventListener('click', openViewer);
 
 restartBtn.addEventListener('click', () => {
+    renderSectorHud(null);
     viewerScreen.classList.remove('active');
     setTimeout(() => {
         setupScreen.classList.add('active');
@@ -460,10 +633,25 @@ restartBtn.addEventListener('click', () => {
     }, 500);
 });
 
+if (sectorHudPrev) {
+    sectorHudPrev.addEventListener('click', (event) => {
+        event.stopPropagation();
+        shiftSectorHudImage(-1);
+    });
+}
+
+if (sectorHudNext) {
+    sectorHudNext.addEventListener('click', (event) => {
+        event.stopPropagation();
+        shiftSectorHudImage(1);
+    });
+}
+
 // --- VIEWER LOGIC ---
 
 function initViewer() {
     currentAngle = 0;
+    renderSectorHud(null);
     
     // Populate the track with 3 identical sets of the photos for infinite scrolling
     // Set 0 (left buffer), Set 1 (center main), Set 2 (right buffer)
@@ -636,7 +824,7 @@ function applyAngleToTrack() {
     let foundSector = null;
     
     for(let sector of activeCfg) {
-        if (sector.azimuth === null || !sector.url) continue;
+        if (sector.azimuth === null || getSectorImageMedia(sector).length === 0) continue;
         const diff = Math.abs((((sector.azimuth - currentAngle) % 360) + 360) % 360);
         const dist = Math.min(diff, 360 - diff);
         if (dist <= 15) { // Show HUD when within 15 degrees
@@ -646,11 +834,13 @@ function applyAngleToTrack() {
     }
     
     if (foundSector) {
-        sectorHudTitle.textContent = `${foundSector.name} (${foundSector.azimuth}°)`;
-        if (sectorHudImg.src !== foundSector.url) sectorHudImg.src = foundSector.url;
-        sectorHud.classList.add('visible');
+        const sectorKey = getSectorHudKey(foundSector);
+        if (sectorKey !== currentHudSectorKey) {
+            currentHudImageIndex = 0;
+        }
+        renderSectorHud(foundSector);
     } else {
-        sectorHud.classList.remove('visible');
+        renderSectorHud(null);
     }
 }
 

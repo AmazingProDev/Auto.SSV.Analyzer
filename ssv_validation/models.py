@@ -35,7 +35,34 @@ class ImageCandidate:
 class Bitmap:
     width: int
     height: int
-    pixels: list[list[tuple[int, int, int]]]
+    pixels: list[list[tuple[int, int, int]]] | None = None
+
+
+@dataclass(slots=True)
+class DotComponent:
+    pixels: list[tuple[int, int]]
+    area: int
+    bbox: tuple[int, int, int, int]
+    center: tuple[float, float]
+    width: int
+    height: int
+    fill_ratio: float
+    mean_rgb: tuple[float, float, float]
+    mean_lab: tuple[float, float, float]
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+
+@dataclass(slots=True)
+class LegendSwatch:
+    bbox: tuple[int, int, int, int]
+    center_y: float
+    rgb: tuple[float, float, float]
+    lab: tuple[float, float, float]
+    hue_degrees: float
+    saturation: float
+    value: float
 
 
 @dataclass

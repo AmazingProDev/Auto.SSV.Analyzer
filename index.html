@@ -6,7 +6,7 @@
     <title>360° Telecom Site Audit Viewer</title>
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=33">
     <!-- Google Fonts -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
 </head>
@@ -63,8 +63,16 @@
         
         <!-- Sector Heads Up Display -->
         <div id="sector-hud" class="sector-hud">
-            <div class="sector-hud-title" id="sector-hud-title">Secteur View</div>
-            <img id="sector-hud-img" src="" alt="Sector Antenna Phase">
+            <div class="sector-hud-header">
+                <div class="sector-hud-title" id="sector-hud-title">Secteur View</div>
+                <div id="sector-hud-count" class="sector-hud-count" hidden>1 / 1</div>
+            </div>
+            <div class="sector-hud-media">
+                <button id="sector-hud-prev" class="sector-hud-nav sector-hud-nav-prev" type="button" aria-label="Previous sector image" hidden>‹</button>
+                <div id="sector-hud-source" class="sector-hud-source" hidden>Photos Azimut</div>
+                <img id="sector-hud-img" src="" alt="Sector Antenna Phase">
+                <button id="sector-hud-next" class="sector-hud-nav sector-hud-nav-next" type="button" aria-label="Next sector image" hidden>›</button>
+            </div>
         </div>
 
         <div class="split-layout">
@@ -172,6 +180,10 @@
                     <div id="ssv-summary" class="ssv-results" hidden>
                         <div class="ssv-summary-grid">
                             <div id="ssv-verdict" class="ssv-verdict-card">Waiting for analysis</div>
+                            <div id="ssv-verdict-meta" class="ssv-verdict-meta" hidden></div>
+                        </div>
+                        <div id="ssv-summary-controls" class="ssv-summary-controls" hidden>
+                            <button id="ssv-toggle-analyses" type="button" class="ssv-toggle-btn">Show all analysis</button>
                         </div>
                     </div>
                 </div>
@@ -186,7 +198,7 @@
     <!-- JSZip for Excel Parsing -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- App Script -->
-    <script src="app.js?v=8"></script>
-    <script src="ssv-validation-ui.js?v=16"></script>
+    <script src="app.js?v=17"></script>
+    <script src="ssv-validation-ui.js?v=20"></script>
 </body>
 </html>

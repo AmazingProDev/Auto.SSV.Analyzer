@@ -122,8 +122,15 @@ class AppRequestHandler(SimpleHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"success": False, "error": "Invalid file format. Please upload an .xlsx workbook."})
             return
 
+        include_all_previews = False
+        include_preview_parts = fields.get("includeAllPreviews", [])
+        if include_preview_parts:
+            include_all_previews = (
+                include_preview_parts[0].get("data", b"").decode("utf-8", "ignore").strip().lower() in {"1", "true", "yes", "on"}
+            )
+
         try:
-            response = validate_ssv_workbook(uploaded_file["data"], filename)
+            response = validate_ssv_workbook(uploaded_file["data"], filename, include_all_previews=include_all_previews)
         except SsvValidationError as exc:
             LOGGER.warning("SSV validation failed: %s", exc)
             self.send_json(HTTPStatus.BAD_REQUEST, {"success": False, "error": str(exc)})
@@ -160,4 +167,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
