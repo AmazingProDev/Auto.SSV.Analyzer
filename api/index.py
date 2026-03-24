@@ -81,5 +81,5 @@ def app(environ, start_response):
         start_response("200 OK", headers + [("Content-Type", "application/json")])
         return [json.dumps(response).encode("utf-8")]
 
-    start_response("404 Not Found", headers + [("Content-Type", "application/json")])
-    return [json.dumps({"success": False, "error": "Unknown API route."}).encode("utf-8")]
+    start_response("405 Method Not Allowed", headers + [("Content-Type", "application/json")])
+    return [json.dumps({"success": False, "error": f"Method {method} not allowed. Please use POST."}).encode("utf-8")]
