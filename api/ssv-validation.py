@@ -5,7 +5,7 @@ from http import HTTPStatus
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from server import parse_multipart_form_data
+from start_local import parse_multipart_form_data
 from ssv_validation.service import validate_ssv_workbook, SsvValidationError
 
 def app(environ, start_response):
